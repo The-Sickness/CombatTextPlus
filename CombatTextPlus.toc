@@ -1,0 +1,21 @@
+## Interface: 110000, 110002
+## Title: CombatTextPlus
+## Author: Sharpedge_Gaming
+## Version: 1.1
+## IconTexture: 1120721
+## DefaultState: Enabled
+## SavedVariables: CombatTextPlusDB
+## LoadOnDemand: 0
+
+libs\LibStub\LibStub.lua
+libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+libs\AceGUI-3.0\AceGUI-3.0.xml
+
+libs\LibSharedMedia-3.0\lib.xml
+libs\AceConfig-3.0\AceConfig-3.0.xml
+libs\LibSharedMedia-3.0\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
+libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+
+CombatTextPlus.lua
+
