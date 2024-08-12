@@ -1,0 +1,49 @@
+------------------------------------------------------------------------
+r6 | nevcairiel | 2008-10-30 10:36:18 +0000 (Thu, 30 Oct 2008) | 1 line
+Changed paths:
+   M /trunk/LibDBIcon-1.0/LibDBIcon-1.0.lua
+
+Added lib:Refresh(name [, newDB]) API to refresh the position of the minimap button on, for example, change of DB profile
+------------------------------------------------------------------------
+r5 | rabbit | 2008-10-18 06:04:20 +0000 (Sat, 18 Oct 2008) | 1 line
+Changed paths:
+   M /trunk/LibDBIcon-1.0/LibDBIcon-1.0.lua
+
+New API, :IsRegistered(name).
+------------------------------------------------------------------------
+r4 | rabbit | 2008-10-17 21:40:02 +0000 (Fri, 17 Oct 2008) | 1 line
+Changed paths:
+   A /trunk/.pkgmeta
+
+Add .pkgmeta file.
+------------------------------------------------------------------------
+r3 | rabbit | 2008-10-17 15:11:17 +0000 (Fri, 17 Oct 2008) | 1 line
+Changed paths:
+   M /trunk/LibDBIcon-1.0/LibDBIcon-1.0.lua
+
+Added API to hide and show the icon.
+------------------------------------------------------------------------
+r2 | rabbit | 2008-10-17 14:52:03 +0000 (Fri, 17 Oct 2008) | 1 line
+Changed paths:
+   A /trunk/LibDBIcon-1.0
+   A /trunk/LibDBIcon-1.0/LibDBIcon-1.0.lua
+   A /trunk/LibDBIcon-1.0.toc
+   A /trunk/libs
+   A /trunk/libs/CallbackHandler-1.0
+   A /trunk/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua
+   A /trunk/libs/CallbackHandler-1.0/CallbackHandler-1.0.xml
+   A /trunk/libs/LibDataBroker-1.1
+   A /trunk/libs/LibDataBroker-1.1/LibDataBroker-1.1.lua
+   A /trunk/libs/LibStub
+   A /trunk/libs/LibStub/LibStub.lua
+
+First commit, embed this library to automagically create a small minimap icon for your LDB object.
+------------------------------------------------------------------------
+r1 | root | 2008-10-17 14:48:12 +0000 (Fri, 17 Oct 2008) | 1 line
+Changed paths:
+   A /branches
+   A /tags
+   A /trunk
+
+"libdbicon-1-0/mainline: Initial Import"
+------------------------------------------------------------------------
