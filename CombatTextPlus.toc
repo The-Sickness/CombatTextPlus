@@ -1,7 +1,7 @@
 ## Interface: 110000, 110002
 ## Title: CombatTextPlus
 ## Author: Sharpedge_Gaming
-## Version: 1.1
+## Version: 1.5
 ## IconTexture: 1120721
 ## DefaultState: Enabled
 ## SavedVariables: CombatTextPlusDB
