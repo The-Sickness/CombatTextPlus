@@ -1,3 +1,6 @@
+-- Made by Sharpedge_Gaming
+-- v1.5 - 11.0.2
+
 local addonName = "CombatTextPlus"
 
 local AceAddon = LibStub("AceAddon-3.0")
@@ -8,6 +11,13 @@ local LDB = LibStub("LibDataBroker-1.1")
 local icon = LibStub("LibDBIcon-1.0") 
 
 local CombatTextPlus = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0")
+
+local function DisableBlizzardCombatText()
+   
+    SetCVar("floatingCombatTextCombatDamage", 0)
+    
+    CombatTextPlus:Print("Blizzard combat text for damage has been disabled.")
+end
 
 local CombatTextPlusLDB = LDB:NewDataObject("CombatTextPlus", {
     type = "launcher",
@@ -119,6 +129,9 @@ function CombatTextPlus:OnInitialize()
     frame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
     self:ToggleEnabled(db.profile.enabled)
 
+    -- Call the function to disable Blizzard combat text for damage
+    DisableBlizzardCombatText()
+
     frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     frame:RegisterEvent("PLAYER_REGEN_DISABLED")
     frame:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -141,6 +154,7 @@ function CombatTextPlus:OnInitialize()
         end
     end)
 end
+
 
 function CombatTextPlus:SetupProfileOptions()
     local profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)
