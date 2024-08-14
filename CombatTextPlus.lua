@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v1.5 - 11.0.2
+-- v1.7 - 11.0.2
 
 local addonName = "CombatTextPlus"
 
@@ -96,10 +96,10 @@ local savedVariables = {
             chaos = {r = 1, g = 1, b = 1},     -- White
             dot = {r = 1, g = 1, b = 1},       -- White
         },
-        minimap = { hide = false } 
+        minimap = { hide = false }, 
+        dotYOffsetMultiplier = 1.0  -- Default value to avoid nil
     }
 }
-
 
 local frame = CreateFrame("Frame", "CombatTextPlusFrame", UIParent)
 frame.text = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -129,7 +129,6 @@ function CombatTextPlus:OnInitialize()
     frame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
     self:ToggleEnabled(db.profile.enabled)
 
-    -- Call the function to disable Blizzard combat text for damage
     DisableBlizzardCombatText()
 
     frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
@@ -154,7 +153,6 @@ function CombatTextPlus:OnInitialize()
         end
     end)
 end
-
 
 function CombatTextPlus:SetupProfileOptions()
     local profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)
@@ -229,16 +227,22 @@ function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId
             local progress = (now - startTime) / scrollDuration
             if progress >= 1 then
                 combatTextFrame:Hide()
+                label:Hide()  
                 combatTextFrame:SetScript("OnUpdate", nil)
                 table.remove(damageTypeLastYPositions[damageType], index)
             else
                 local xOffset, yOffset = CombatTextPlus:GetMovementOffsets(nameplate, damageType, progress, index)
-                combatTextFrame:SetPoint("CENTER", nameplate, "TOP", xOffset, yOffset)
-                combatTextFrame:SetAlpha(0.2 * (1 - progress) + 0.8)
+                yOffset = math.min(yOffset, db.profile.maxYOffset)  -- Apply the updated Max Y Offset here
+                combatTextFrame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+                label:SetPoint("LEFT", combatTextFrame.text, "RIGHT", 5, 0)  
+                local alpha = 1 - progress
+                combatTextFrame:SetAlpha(alpha)
+                label:SetAlpha(alpha)  
             end
         end)
     end
 end
+
 
 function CombatTextPlus:GetDamageType(school, subEvent)
     if subEvent == "SPELL_PERIODIC_DAMAGE" then
@@ -315,30 +319,40 @@ function CombatTextPlus:CreateCombatTextFrame(nameplate, damageType)
 end
 
 function CombatTextPlus:GetMovementOffsets(nameplate, damageType, progress, index)
-    local xOffset, yOffset = 0, 0
+    -- Initialize xOffset with the appropriate horizontal movement based on damage type
+    local xOffset = db.profile.damageTypeOffsets[damageType] * progress
+    
+    -- Define the starting position offset (adjust this value as needed)
+    local startingYOffset = -20  -- Move the text down by 20 units from the original starting point
+    
+    -- Calculate yOffset for vertical movement, adding the starting position offset
+    local yOffset = startingYOffset + math.min(50 * progress * db.profile.speedFactor + (index * 10), db.profile.maxYOffset)
 
-    xOffset = db.profile.damageTypeOffsets[damageType] * progress
-    yOffset = math.min(50 * progress * db.profile.speedFactor + (index * 10), db.profile.maxYOffset)
+    -- Adjust the yOffset for DOT damage if needed
+    if damageType == "dot" then
+        local dotMultiplier = db.profile.dotYOffsetMultiplier or 1.0
+        yOffset = yOffset * dotMultiplier
+    end
 
+    -- Additional custom xOffset adjustments for specific damage types
     if damageType == "fire" then
-        xOffset = math.sin(progress * 5) * 10  
+        xOffset = db.profile.damageTypeOffsets.fire * progress  
     elseif damageType == "nature" then
-        xOffset = -15 * progress * (1 - progress)  
+        xOffset = db.profile.damageTypeOffsets.nature * progress
     elseif damageType == "frost" then
-        xOffset = 15 * progress * (1 - progress) 
+        xOffset = db.profile.damageTypeOffsets.frost * progress
     elseif damageType == "shadow" then
-        xOffset = math.sin(progress * 10) * 10  
+        xOffset = db.profile.damageTypeOffsets.shadow * progress
     elseif damageType == "arcane" then
-        xOffset = math.sin(progress * 10) * 15 * progress  
+        xOffset = db.profile.damageTypeOffsets.arcane * progress
     elseif damageType == "chaos" then
-        xOffset = math.sin(progress * 20) * 5  
-    elseif damageType == "dot" then
-        xOffset = db.profile.damageTypeOffsets.dot * progress  
-        yOffset = yOffset * db.profile.damageTypeYOffsetMultiplier.dot  
+        xOffset = db.profile.damageTypeOffsets.chaos * progress
     end
 
     return xOffset, yOffset
 end
+
+
 
 function CalculateDistanceToTarget(nameplate)
     local playerX, playerY, playerZ = UnitPosition("player")
