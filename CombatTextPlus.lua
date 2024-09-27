@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v1.7 - 11.0.2
+-- v1.8 - 11.0.2
 
 local addonName = "CombatTextPlus"
 
@@ -15,6 +15,7 @@ local CombatTextPlus = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-
 local function DisableBlizzardCombatText()
    
     SetCVar("floatingCombatTextCombatDamage", 0)
+	
     
     CombatTextPlus:Print("Blizzard combat text for damage has been disabled.")
 end
@@ -42,13 +43,13 @@ local CombatTextPlusLDB = LDB:NewDataObject("CombatTextPlus", {
 local savedVariables = {
     profile = {
         font = "Friz Quadrata TT",  -- Default font
-        textColor = {r = 1, g = 1, b = 1, a = 1}, 
-        fontSize = 24,  
-        labelFontSize = 14,  
-        enabled = true,  
-        scrollDuration = 0.5,  
-        maxYOffset = 100,  
-        speedFactor = 2.0,  
+        textColor = {r = 1, g = 1, b = 1, a = 1},  -- White text by default
+        fontSize = 24,
+        labelFontSize = 14,
+        enabled = true,
+        scrollDuration = 0.5,
+        maxYOffset = 100,
+        speedFactor = 2.0,
         damageTypeOffsets = {
             physical = -10,
             holy = 10,
@@ -59,9 +60,7 @@ local savedVariables = {
             arcane = 0,
             chaos = 0,
             dot = 10,
-        },
-        damageTypeYOffsetMultiplier = {
-            dot = 0.8,  
+            heal = 0,  -- Healing offset
         },
         damageTypeFilters = {
             physical = true,
@@ -73,28 +72,31 @@ local savedVariables = {
             arcane = true,
             chaos = true,
             dot = true,
+            heal = true,  -- Enable healing filter by default
         },
         damageTypeColors = {
-            physical = {r = 1, g = 0.8, b = 0.2},  -- Yellowish
-            holy = {r = 1, g = 1, b = 0.6},        -- Light Yellow
-            fire = {r = 1, g = 0.5, b = 0.2},      -- Orange
-            nature = {r = 0.3, g = 1, b = 0.3},    -- Green
-            frost = {r = 0.4, g = 0.8, b = 1},     -- Light Blue
-            shadow = {r = 0.5, g = 0, b = 0.5},    -- Dark Purple
-            arcane = {r = 0.7, g = 0.4, b = 1},    -- Violet
-            chaos = {r = 1, g = 0.3, b = 0.3},     -- Reddish
-            dot = {r = 0.6, g = 0.2, b = 0.6},     -- Purple
+            physical = {r = 1, g = 1, b = 1},  -- Default to white
+            holy = {r = 1, g = 1, b = 1},      -- White by default
+            fire = {r = 1, g = 1, b = 1},      -- White by default
+            nature = {r = 1, g = 1, b = 1},    -- White by default
+            frost = {r = 1, g = 1, b = 1},     -- White by default
+            shadow = {r = 1, g = 1, b = 1},    -- White by default
+            arcane = {r = 1, g = 1, b = 1},    -- White by default
+            chaos = {r = 1, g = 1, b = 1},     -- White by default
+            dot = {r = 1, g = 1, b = 1},       -- White by default
+            heal = {r = 1, g = 1, b = 1},      -- White by default for healing
         },
         labelColors = {
-            physical = {r = 1, g = 1, b = 1},  -- White
-            holy = {r = 1, g = 1, b = 1},      -- White
-            fire = {r = 1, g = 1, b = 1},      -- White
-            nature = {r = 1, g = 1, b = 1},    -- White
-            frost = {r = 1, g = 1, b = 1},     -- White
-            shadow = {r = 1, g = 1, b = 1},    -- White
-            arcane = {r = 1, g = 1, b = 1},    -- White
-            chaos = {r = 1, g = 1, b = 1},     -- White
-            dot = {r = 1, g = 1, b = 1},       -- White
+            physical = {r = 1, g = 1, b = 1},  -- Label colors set to white
+            holy = {r = 1, g = 1, b = 1},
+            fire = {r = 1, g = 1, b = 1},
+            nature = {r = 1, g = 1, b = 1},
+            frost = {r = 1, g = 1, b = 1},
+            shadow = {r = 1, g = 1, b = 1},
+            arcane = {r = 1, g = 1, b = 1},
+            chaos = {r = 1, g = 1, b = 1},
+            dot = {r = 1, g = 1, b = 1},
+            heal = {r = 1, g = 1, b = 1},      -- Healing label white by default
         },
         minimap = { hide = false }, 
         dotYOffsetMultiplier = 1.0  -- Default value to avoid nil
@@ -111,7 +113,8 @@ local activeCombatTexts = {}
 local scrollDuration = 1.0  
 local damageTypeLastYPositions = {
     physical = {}, holy = {}, fire = {}, nature = {},
-    frost = {}, shadow = {}, arcane = {}, chaos = {}, dot = {}
+    frost = {}, shadow = {}, arcane = {}, chaos = {}, dot = {},
+    heal = {}  -- Add heal here
 }
 
 function CombatTextPlus:OnInitialize()
@@ -134,6 +137,7 @@ function CombatTextPlus:OnInitialize()
     frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     frame:RegisterEvent("PLAYER_REGEN_DISABLED")
     frame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    
     frame:SetScript("OnEvent", function(self, event, ...)
         if event == "COMBAT_LOG_EVENT_UNFILTERED" then
             CombatTextPlus:OnCombatLogEvent(CombatLogGetCurrentEventInfo())
@@ -148,11 +152,13 @@ function CombatTextPlus:OnInitialize()
             activeCombatTexts = {}
             damageTypeLastYPositions = {
                 physical = {}, holy = {}, fire = {}, nature = {},
-                frost = {}, shadow = {}, arcane = {}, chaos = {}, dot = {}
+                frost = {}, shadow = {}, arcane = {}, chaos = {}, dot = {},
+                heal = {}  -- Reset heal as well
             }
         end
-    end)
-end
+    end)  -- This closes the SetScript function
+
+end  -- This closes the OnInitialize function
 
 function CombatTextPlus:SetupProfileOptions()
     local profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)
@@ -173,9 +179,10 @@ local aggregationDelay = 0.1
 
 function CombatTextPlus:OnCombatLogEvent(...)
     local _, subEvent, _, sourceGUID, _, _, _, destGUID, _, _, _, spellId, spellName, school, amount = ...
-    
+
     if not db.profile.enabled then return end
 
+    -- Handle damage events
     if subEvent == "SPELL_DAMAGE" or subEvent == "SWING_DAMAGE" or subEvent == "SPELL_PERIODIC_DAMAGE" then
         if sourceGUID == UnitGUID("player") and amount and amount > 0 then
             local damageType = self:GetDamageType(school, subEvent)
@@ -184,7 +191,7 @@ function CombatTextPlus:OnCombatLogEvent(...)
                 if not damageAggregation[key] then
                     damageAggregation[key] = { amount = 0, timer = nil }
                 end
-                
+
                 damageAggregation[key].amount = damageAggregation[key].amount + amount
 
                 if not damageAggregation[key].timer then
@@ -194,55 +201,75 @@ function CombatTextPlus:OnCombatLogEvent(...)
                                 self:DisplayCombatText(nameplate, damageAggregation[key].amount, damageType, spellId, spellName)
                             end
                         end
-                        damageAggregation[key] = nil  
+                        damageAggregation[key] = nil
                     end)
+                end
+            end
+        end
+    end
+
+    -- Handle healing events
+    if subEvent == "SPELL_HEAL" or subEvent == "SPELL_PERIODIC_HEAL" then
+        local isCriticalHeal = select(21, ...)
+        if sourceGUID == UnitGUID("player") and amount and amount > 0 then
+            -- Only show healing if the filter is enabled
+            if db.profile.damageTypeFilters.heal then
+                -- Display healing text on nameplates where possible
+                for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+                    if UnitGUID(nameplate.UnitFrame.unit) == destGUID then
+                        self:DisplayCombatText(nameplate, amount, "heal", spellId, spellName, isCriticalHeal)
+                    end
                 end
             end
         end
     end
 end
 
-function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId, spellName)
+function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId, spellName, isCriticalHeal)
     local formattedAmount = self:FormatNumber(amount)
     if formattedAmount then
         local combatTextFrame = self:CreateCombatTextFrame(nameplate, damageType)
+
+        -- Fetch the label for the damage type (if any)
+        local damageLabel = self:GetDamageTypeLabel(damageType)
+
+        -- Get the colors for the label and the damage/healing text
+        local labelColorR, labelColorG, labelColorB = self:GetLabelColor(damageType)
+        local damageColorR, damageColorG, damageColorB = self:GetDamageTypeColor(damageType)
+
+        -- Set the label text and color
+        if damageLabel ~= "" and combatTextFrame.label then
+            combatTextFrame.label:SetText(damageLabel)
+            combatTextFrame.label:SetTextColor(labelColorR, labelColorG, labelColorB)
+        end
+
+        -- Set the damage/healing text and color
         combatTextFrame.text:SetText(formattedAmount)
-        combatTextFrame.text:SetTextColor(self:GetDamageTypeColor(damageType))
+        combatTextFrame.text:SetTextColor(damageColorR, damageColorG, damageColorB)
+
         combatTextFrame:SetAlpha(1)
         combatTextFrame:Show()
-
-        local label = combatTextFrame:CreateFontString(nil, "OVERLAY")
-        label:SetFont(LSM:Fetch("font", db.profile.font), db.profile.labelFontSize, "OUTLINE")
-        label:SetText(self:GetDamageTypeLabel(damageType))
-        label:SetTextColor(self:GetLabelColor(damageType))
-        label:SetPoint("LEFT", combatTextFrame.text, "RIGHT", 5, 0)
-        label:Show()
 
         local startTime = GetTime()
         local index = #damageTypeLastYPositions[damageType] + 1
         table.insert(damageTypeLastYPositions[damageType], index)
-
+		
         combatTextFrame:SetScript("OnUpdate", function(self, elapsed)
             local now = GetTime()
-            local progress = (now - startTime) / scrollDuration
+            local progress = (now - startTime) / (scrollDuration / db.profile.speedFactor * 10) 
             if progress >= 1 then
                 combatTextFrame:Hide()
-                label:Hide()  
                 combatTextFrame:SetScript("OnUpdate", nil)
                 table.remove(damageTypeLastYPositions[damageType], index)
             else
                 local xOffset, yOffset = CombatTextPlus:GetMovementOffsets(nameplate, damageType, progress, index)
-                yOffset = math.min(yOffset, db.profile.maxYOffset)  -- Apply the updated Max Y Offset here
                 combatTextFrame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-                label:SetPoint("LEFT", combatTextFrame.text, "RIGHT", 5, 0)  
                 local alpha = 1 - progress
-                combatTextFrame:SetAlpha(alpha)
-                label:SetAlpha(alpha)  
+                combatTextFrame:SetAlpha(alpha)  -- Fade out as it scrolls up
             end
         end)
     end
 end
-
 
 function CombatTextPlus:GetDamageType(school, subEvent)
     if subEvent == "SPELL_PERIODIC_DAMAGE" then
@@ -270,17 +297,24 @@ function CombatTextPlus:GetDamageType(school, subEvent)
 end
 
 function CombatTextPlus:GetDamageTypeColor(damageType)
+    -- Fetch the damage type color from the profile
     local color = db.profile.damageTypeColors[damageType]
+    if not color then
+        return 1, 1, 1  -- Default to white if no color is found
+    end
     return color.r, color.g, color.b
 end
 
 function CombatTextPlus:GetLabelColor(damageType)
+    -- Fetch the label color for the given damage type
     local color = db.profile.labelColors[damageType]
+    if not color then
+        return 1, 1, 1  -- Default to white if no label color is found
+    end
     return color.r, color.g, color.b
 end
 
 function CombatTextPlus:GetDamageTypeLabel(damageType)
-    
     if damageType == "physical" then
         return "Physical"
     elseif damageType == "holy" then
@@ -299,8 +333,10 @@ function CombatTextPlus:GetDamageTypeLabel(damageType)
         return "Chaos"
     elseif damageType == "dot" then
         return "DOT"
+    elseif damageType == "heal" then
+        return "Heal"
     else
-        return ""  
+        return ""  -- Return empty if no label
     end
 end
 
@@ -310,49 +346,71 @@ function CombatTextPlus:CreateCombatTextFrame(nameplate, damageType)
     combatTextFrame:SetPoint("CENTER", nameplate, "TOP", 0, 10)
 
     local combatText = combatTextFrame:CreateFontString(nil, "OVERLAY")
-    combatText:SetFont(LSM:Fetch("font", db.profile.font), db.profile.fontSize, "OUTLINE")
-    combatText:SetTextColor(self:GetDamageTypeColor(damageType))
+    local fontPath = LSM:Fetch("font", db.profile.font)
+
+    -- Set the font size for the damage/healing text
+    combatText:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
     combatText:SetPoint("CENTER", combatTextFrame, "CENTER")
     combatTextFrame.text = combatText
+
+    -- Optionally, you can also create another FontString for the label if needed
+    combatTextFrame.label = combatTextFrame:CreateFontString(nil, "OVERLAY")
+    combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
+    combatTextFrame.label:SetPoint("LEFT", combatTextFrame.text, "RIGHT", 5, 0)
 
     return combatTextFrame
 end
 
-function CombatTextPlus:GetMovementOffsets(nameplate, damageType, progress, index)
-    -- Initialize xOffset with the appropriate horizontal movement based on damage type
-    local xOffset = db.profile.damageTypeOffsets[damageType] * progress
-    
-    -- Define the starting position offset (adjust this value as needed)
-    local startingYOffset = -20  -- Move the text down by 20 units from the original starting point
-    
-    -- Calculate yOffset for vertical movement, adding the starting position offset
-    local yOffset = startingYOffset + math.min(50 * progress * db.profile.speedFactor + (index * 10), db.profile.maxYOffset)
+function CombatTextPlus:UpdateLabelFontSize()
+    local fontPath = LSM:Fetch("font", db.profile.font)
+    for _, combatTextFrame in pairs(activeCombatTexts) do
+        if combatTextFrame.label then
+            combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
+        end
+    end
+end
 
-    -- Adjust the yOffset for DOT damage if needed
+function CombatTextPlus:GetMovementOffsets(nameplate, damageType, progress, index)
+    -- Ensure we have a valid offset for this damageType, default to 0 if missing
+    local xOffset = (db.profile.damageTypeOffsets[damageType] or 0) * progress
+
+    -- Define the starting Y position from the bottom of the nameplate
+    local startingYOffset = 0  -- Start directly at the bottom of the nameplate
+
+    -- Calculate the vertical scrolling range based on the user's max Y offset setting
+    local maxYOffset = db.profile.maxYOffset or 100  -- Use a default if the option is not set
+
+    -- Vertical movement based on progress and index, using maxYOffset as the upper limit
+    local yOffset = startingYOffset + (maxYOffset * progress * db.profile.speedFactor)
+
+    -- Adjust for DOT damage if needed
     if damageType == "dot" then
         local dotMultiplier = db.profile.dotYOffsetMultiplier or 1.0
         yOffset = yOffset * dotMultiplier
     end
 
+    -- Ensure healing follows the same movement logic as damage
+    if damageType == "heal" then
+        yOffset = startingYOffset + (maxYOffset * progress * db.profile.speedFactor)
+    end
+
     -- Additional custom xOffset adjustments for specific damage types
     if damageType == "fire" then
-        xOffset = db.profile.damageTypeOffsets.fire * progress  
+        xOffset = (db.profile.damageTypeOffsets.fire or 0) * progress  
     elseif damageType == "nature" then
-        xOffset = db.profile.damageTypeOffsets.nature * progress
+        xOffset = (db.profile.damageTypeOffsets.nature or 0) * progress
     elseif damageType == "frost" then
-        xOffset = db.profile.damageTypeOffsets.frost * progress
+        xOffset = (db.profile.damageTypeOffsets.frost or 0) * progress
     elseif damageType == "shadow" then
-        xOffset = db.profile.damageTypeOffsets.shadow * progress
+        xOffset = (db.profile.damageTypeOffsets.shadow or 0) * progress
     elseif damageType == "arcane" then
-        xOffset = db.profile.damageTypeOffsets.arcane * progress
+        xOffset = (db.profile.damageTypeOffsets.arcane or 0) * progress
     elseif damageType == "chaos" then
-        xOffset = db.profile.damageTypeOffsets.chaos * progress
+        xOffset = (db.profile.damageTypeOffsets.chaos or 0) * progress
     end
 
     return xOffset, yOffset
 end
-
-
 
 function CalculateDistanceToTarget(nameplate)
     local playerX, playerY, playerZ = UnitPosition("player")
@@ -412,7 +470,7 @@ local options = {
         maxYOffset = {
             name = "Max Y Offset",
             type = "range",
-            desc = "Set the maximum vertical offset for the text.",
+            desc = "Set the maximum vertical offset for the text to scroll upwards.",
             min = 50,
             max = 300,
             step = 10,
@@ -432,109 +490,120 @@ local options = {
             order = 4,
         },
         damageTypeOffsets = {
-    name = "Damage Type Offsets",
-    type = "group",
-    inline = true,
-    desc = "Customize the horizontal movement of text based on damage type.",
-    args = {
-        physical = {
-            name = "Physical Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Physical damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.physical end,
-            set = function(info, value) db.profile.damageTypeOffsets.physical = value end,
-            order = 1,
-        },
-        holy = {
-            name = "Holy Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Holy damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.holy end,
-            set = function(info, value) db.profile.damageTypeOffsets.holy = value end,
-            order = 2,
-        },
-        fire = {
-            name = "Fire Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Fire damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.fire end,
-            set = function(info, value) db.profile.damageTypeOffsets.fire = value end,
-            order = 3,
-        },
-        nature = {
-            name = "Nature Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Nature damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.nature end,
-            set = function(info, value) db.profile.damageTypeOffsets.nature = value end,
-            order = 4,
-        },
-        frost = {
-            name = "Frost Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Frost damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.frost end,
-            set = function(info, value) db.profile.damageTypeOffsets.frost = value end,
-            order = 5,
-        },
-        shadow = {
-            name = "Shadow Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Shadow damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.shadow end,
-            set = function(info, value) db.profile.damageTypeOffsets.shadow = value end,
-            order = 6,
-        },
-        arcane = {
-            name = "Arcane Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Arcane damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.arcane end,
-            set = function(info, value) db.profile.damageTypeOffsets.arcane = value end,
-            order = 7,
-        },
-        chaos = {
-            name = "Chaos Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for Chaos damage.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.chaos end,
-            set = function(info, value) db.profile.damageTypeOffsets.chaos = value end,
-            order = 8,
-        },
-        dot = {
-            name = "DOT Offset",
-            type = "range",
-            min = -50,
-            max = 50,
-            step = 1,
-            desc = "Adjust the horizontal movement of the combat text for DOT (Damage Over Time) effects.\n\nA negative value will move the text to the left, and a positive value will move it to the right.",
-            get = function() return db.profile.damageTypeOffsets.dot end,
-            set = function(info, value) db.profile.damageTypeOffsets.dot = value end,
-            order = 9,
+            name = "Damage Type Offsets",
+            type = "group",
+            inline = true,
+            desc = "Customize the horizontal movement of text based on damage type.",
+            args = {
+                physical = {
+                    name = "Physical Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Physical damage.",
+                    get = function() return db.profile.damageTypeOffsets.physical end,
+                    set = function(info, value) db.profile.damageTypeOffsets.physical = value end,
+                    order = 1,
+                },
+                holy = {
+                    name = "Holy Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Holy damage.",
+                    get = function() return db.profile.damageTypeOffsets.holy end,
+                    set = function(info, value) db.profile.damageTypeOffsets.holy = value end,
+                    order = 2,
+                },
+                fire = {
+                    name = "Fire Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Fire damage.",
+                    get = function() return db.profile.damageTypeOffsets.fire end,
+                    set = function(info, value) db.profile.damageTypeOffsets.fire = value end,
+                    order = 3,
+                },
+                nature = {
+                    name = "Nature Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Nature damage.",
+                    get = function() return db.profile.damageTypeOffsets.nature end,
+                    set = function(info, value) db.profile.damageTypeOffsets.nature = value end,
+                    order = 4,
+                },
+                frost = {
+                    name = "Frost Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Frost damage.",
+                    get = function() return db.profile.damageTypeOffsets.frost end,
+                    set = function(info, value) db.profile.damageTypeOffsets.frost = value end,
+                    order = 5,
+                },
+                shadow = {
+                    name = "Shadow Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Shadow damage.",
+                    get = function() return db.profile.damageTypeOffsets.shadow end,
+                    set = function(info, value) db.profile.damageTypeOffsets.shadow = value end,
+                    order = 6,
+                },
+                arcane = {
+                    name = "Arcane Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Arcane damage.",
+                    get = function() return db.profile.damageTypeOffsets.arcane end,
+                    set = function(info, value) db.profile.damageTypeOffsets.arcane = value end,
+                    order = 7,
+                },
+                chaos = {
+                    name = "Chaos Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Chaos damage.",
+                    get = function() return db.profile.damageTypeOffsets.chaos end,
+                    set = function(info, value) db.profile.damageTypeOffsets.chaos = value end,
+                    order = 8,
+                },
+                dot = {
+                    name = "DOT Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for DOT effects.",
+                    get = function() return db.profile.damageTypeOffsets.dot end,
+                    set = function(info, value) db.profile.damageTypeOffsets.dot = value end,
+                    order = 9,
+                },
+                heal = {
+                    name = "Heal Offset",
+                    type = "range",
+                    min = -50,
+                    max = 50,
+                    step = 1,
+                    desc = "Adjust the horizontal movement of the combat text for Healing.",
+                    get = function() return db.profile.damageTypeOffsets.heal end,
+                    set = function(info, value) db.profile.damageTypeOffsets.heal = value end,
+                    order = 10,
                 },
             },
             order = 5,
@@ -569,19 +638,20 @@ local options = {
             order = 7,
         },
         labelFontSize = {
-            name = "Label Font Size",
-            type = "range",
-            desc = "Set the font size of the damage type label (e.g., Physical, Fire, Shadow, DOT).",
-            min = 8,
-            max = 32,
-            step = 1,
-            get = function()
-                return db.profile.labelFontSize
-            end,
-            set = function(info, value)
-                db.profile.labelFontSize = value
-            end,
-            order = 8,
+    name = "Label Font Size",
+    type = "range",
+    desc = "Set the font size of the damage type label (e.g., Physical, Fire, Shadow, DOT).",
+    min = 8,
+    max = 32,
+    step = 1,
+    get = function()
+        return db.profile.labelFontSize
+    end,
+    set = function(info, value)
+        db.profile.labelFontSize = value
+        CombatTextPlus:UpdateLabelFontSize()  -- Ensure labels are updated
+    end,
+    order = 8,
         },
         font = {
             name = "Font",
@@ -604,7 +674,7 @@ local options = {
             name = "Label Colors",
             type = "group",
             inline = true,
-            desc = "Customize the color of the labels that appear next to each type of damage (e.g., 'Physical', 'Fire', 'DOT'). These labels help you quickly identify the type of damage at a glance.",
+            desc = "Customize the color of the labels that appear next to each type of damage.",
             args = {
                 physicalLabelColor = {
                     name = "Physical Label Color",
@@ -721,7 +791,7 @@ local options = {
                 dotLabelColor = {
                     name = "DOT Label Color",
                     type = "color",
-                    desc = "Set the color of the 'DOT' (Damage Over Time) label. This label appears for periodic damage effects like bleeds, poisons, and other DOT abilities.",
+                    desc = "Set the color of the 'DOT' label.",
                     get = function()
                         local color = db.profile.labelColors.dot
                         return color.r, color.g, color.b
@@ -732,6 +802,20 @@ local options = {
                     end,
                     order = 9,
                 },
+                healLabelColor = {
+                    name = "Heal Label Color",
+                    type = "color",
+                    desc = "Set the color of the 'Heal' label.",
+                    get = function()
+                        local color = db.profile.labelColors.heal
+                        return color.r, color.g, color.b
+                    end,
+                    set = function(info, r, g, b)
+                        local color = db.profile.labelColors.heal
+                        color.r, color.g, color.b = r, g, b
+                    end,
+                    order = 10,
+                },
             },
             order = 10,
         },
@@ -739,12 +823,12 @@ local options = {
             name = "Damage Type Filters",
             type = "group",
             inline = true,
-            desc = "Select which types of damage you want to see displayed during combat. You can enable or disable specific damage types like Physical, Fire, Frost, etc. This allows you to focus only on the information that matters most to you.",
+            desc = "Select which types of damage you want to see displayed during combat.",
             args = {
                 physical = {
                     name = "Physical Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Physical damage. Physical damage includes attacks like melee swings, bleeds, and physical-based abilities.",
+                    desc = "Enable or disable the display of Physical damage.",
                     get = function()
                         return db.profile.damageTypeFilters.physical
                     end,
@@ -756,7 +840,7 @@ local options = {
                 holy = {
                     name = "Holy Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Holy damage. Holy damage is often associated with Paladin abilities and certain healing effects.",
+                    desc = "Enable or disable the display of Holy damage.",
                     get = function()
                         return db.profile.damageTypeFilters.holy
                     end,
@@ -768,7 +852,7 @@ local options = {
                 fire = {
                     name = "Fire Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Fire damage. Fire damage includes abilities like Fireball, Flame Shock, and other fire-based spells.",
+                    desc = "Enable or disable the display of Fire damage.",
                     get = function()
                         return db.profile.damageTypeFilters.fire
                     end,
@@ -780,7 +864,7 @@ local options = {
                 nature = {
                     name = "Nature Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Nature damage. Nature damage includes abilities like Lightning Bolt, Poison, and other nature-based effects.",
+                    desc = "Enable or disable the display of Nature damage.",
                     get = function()
                         return db.profile.damageTypeFilters.nature
                     end,
@@ -792,7 +876,7 @@ local options = {
                 frost = {
                     name = "Frost Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Frost damage. Frost damage includes abilities like Frostbolt, Blizzard, and other frost-based spells.",
+                    desc = "Enable or disable the display of Frost damage.",
                     get = function()
                         return db.profile.damageTypeFilters.frost
                     end,
@@ -804,7 +888,7 @@ local options = {
                 shadow = {
                     name = "Shadow Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Shadow damage. Shadow damage is associated with abilities like Shadow Word: Pain, Shadow Bolt, and other shadow-based spells.",
+                    desc = "Enable or disable the display of Shadow damage.",
                     get = function()
                         return db.profile.damageTypeFilters.shadow
                     end,
@@ -816,7 +900,7 @@ local options = {
                 arcane = {
                     name = "Arcane Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Arcane damage. Arcane damage includes abilities like Arcane Missiles, Arcane Blast, and other arcane-based spells.",
+                    desc = "Enable or disable the display of Arcane damage.",
                     get = function()
                         return db.profile.damageTypeFilters.arcane
                     end,
@@ -828,7 +912,7 @@ local options = {
                 chaos = {
                     name = "Chaos Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of Chaos damage. Chaos damage is a unique type that combines all magic schools and is often associated with Demon Hunter abilities.",
+                    desc = "Enable or disable the display of Chaos damage.",
                     get = function()
                         return db.profile.damageTypeFilters.chaos
                     end,
@@ -840,7 +924,7 @@ local options = {
                 dot = {
                     name = "DOT Damage",
                     type = "toggle",
-                    desc = "Enable or disable the display of DOT (Damage Over Time) damage. This includes periodic damage from effects like bleeds, poisons, and other DOT abilities.",
+                    desc = "Enable or disable the display of DOT damage.",
                     get = function()
                         return db.profile.damageTypeFilters.dot
                     end,
@@ -849,6 +933,14 @@ local options = {
                     end,
                     order = 9,
                 },
+                heal = {
+                    name = "Healing",
+                    type = "toggle",
+                    desc = "Enable or disable the display of Healing.",
+                    get = function() return db.profile.damageTypeFilters.heal end,
+                    set = function(info, value) db.profile.damageTypeFilters.heal = value end,
+                    order = 10,
+                },
             },
             order = 11,
         },
@@ -856,12 +948,12 @@ local options = {
             name = "Damage Type Colors",
             type = "group",
             inline = true,
-            desc = "Customize the color of the combat text for each damage type. This allows you to assign distinct colors to each type of damage, making it easier to differentiate between them during combat.",
+            desc = "Customize the color of the combat text for each damage type.",
             args = {
                 physicalColor = {
                     name = "Physical Damage Color",
                     type = "color",
-                    desc = "Set the color for Physical damage. This color will be used for all combat text related to physical attacks and abilities.",
+                    desc = "Set the color for Physical damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.physical
                         return color.r, color.g, color.b
@@ -875,7 +967,7 @@ local options = {
                 holyColor = {
                     name = "Holy Damage Color",
                     type = "color",
-                    desc = "Set the color for Holy damage. This color will be used for all combat text related to holy-based attacks and abilities.",
+                    desc = "Set the color for Holy damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.holy
                         return color.r, color.g, color.b
@@ -889,7 +981,7 @@ local options = {
                 fireColor = {
                     name = "Fire Damage Color",
                     type = "color",
-                    desc = "Set the color for Fire damage. This color will be used for all combat text related to fire-based attacks and abilities.",
+                    desc = "Set the color for Fire damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.fire
                         return color.r, color.g, color.b
@@ -903,7 +995,7 @@ local options = {
                 natureColor = {
                     name = "Nature Damage Color",
                     type = "color",
-                    desc = "Set the color for Nature damage. This color will be used for all combat text related to nature-based attacks and abilities.",
+                    desc = "Set the color for Nature damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.nature
                         return color.r, color.g, color.b
@@ -917,7 +1009,7 @@ local options = {
                 frostColor = {
                     name = "Frost Damage Color",
                     type = "color",
-                    desc = "Set the color for Frost damage. This color will be used for all combat text related to frost-based attacks and abilities.",
+                    desc = "Set the color for Frost damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.frost
                         return color.r, color.g, color.b
@@ -931,7 +1023,7 @@ local options = {
                 shadowColor = {
                     name = "Shadow Damage Color",
                     type = "color",
-                    desc = "Set the color for Shadow damage. This color will be used for all combat text related to shadow-based attacks and abilities.",
+                    desc = "Set the color for Shadow damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.shadow
                         return color.r, color.g, color.b
@@ -945,7 +1037,7 @@ local options = {
                 arcaneColor = {
                     name = "Arcane Damage Color",
                     type = "color",
-                    desc = "Set the color for Arcane damage. This color will be used for all combat text related to arcane-based attacks and abilities.",
+                    desc = "Set the color for Arcane damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.arcane
                         return color.r, color.g, color.b
@@ -959,7 +1051,7 @@ local options = {
                 chaosColor = {
                     name = "Chaos Damage Color",
                     type = "color",
-                    desc = "Set the color for Chaos damage. This color will be used for all combat text related to chaos-based attacks and abilities.",
+                    desc = "Set the color for Chaos damage.",
                     get = function()
                         local color = db.profile.damageTypeColors.chaos
                         return color.r, color.g, color.b
@@ -973,7 +1065,7 @@ local options = {
                 dotColor = {
                     name = "DOT Damage Color",
                     type = "color",
-                    desc = "Set the color for DOT (Damage Over Time) effects. This color will be used for all combat text related to periodic damage from effects like bleeds, poisons, and other DOT abilities.",
+                    desc = "Set the color for DOT effects.",
                     get = function()
                         local color = db.profile.damageTypeColors.dot
                         return color.r, color.g, color.b
@@ -983,6 +1075,20 @@ local options = {
                         color.r, color.g, color.b = r, g, b
                     end,
                     order = 9,
+                },
+                healColor = {
+                    name = "Healing Color",
+                    type = "color",
+                    desc = "Set the color for Healing effects.",
+                    get = function()
+                        local color = db.profile.damageTypeColors.heal
+                        return color.r, color.g, color.b
+                    end,
+                    set = function(info, r, g, b)
+                        local color = db.profile.damageTypeColors.heal
+                        color.r, color.g, color.b = r, g, b
+                    end,
+                    order = 10,
                 },
             },
             order = 12,
