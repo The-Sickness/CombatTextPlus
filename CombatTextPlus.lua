@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v1.8 - 11.0.2
+-- v1.9 - 11.0.2
 
 local addonName = "CombatTextPlus"
 
@@ -15,8 +15,7 @@ local CombatTextPlus = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-
 local function DisableBlizzardCombatText()
    
     SetCVar("floatingCombatTextCombatDamage", 0)
-	
-    
+	  
     CombatTextPlus:Print("Blizzard combat text for damage has been disabled.")
 end
 
@@ -99,7 +98,7 @@ local savedVariables = {
             heal = {r = 1, g = 1, b = 1},      -- Healing label white by default
         },
         minimap = { hide = false }, 
-        dotYOffsetMultiplier = 1.0  -- Default value to avoid nil
+        dotYOffsetMultiplier = .01  -- Default value to avoid nil
     }
 }
 
@@ -161,9 +160,87 @@ function CombatTextPlus:OnInitialize()
 end  -- This closes the OnInitialize function
 
 function CombatTextPlus:SetupProfileOptions()
+    -- Initialize the options table if it doesn't exist yet
+    self.options = self.options or {
+        name = "CombatTextPlus",
+        type = "group",
+        args = {}  -- Initialize the args table here as well
+    }
+
     local profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db)
+    
+    -- Register a profiles options table and add it to the Blizzard options UI
     AceConfig:RegisterOptionsTable("CombatTextPlus_Profiles", profiles)
     AceConfigDialog:AddToBlizOptions("CombatTextPlus_Profiles", "Profiles", "CombatTextPlus")
+    
+    -- Add a dropdown for switching profiles directly
+    self.options.args.profile = {
+        name = "Profile",
+        type = "group",
+        args = {
+            currentProfile = {
+                name = "Current Profile",
+                type = "select",
+                desc = "Select which profile to use.",
+                values = function() return self.db:GetProfiles() end,
+                get = function() return self.db:GetCurrentProfile() end,
+                set = function(_, value)
+                    self.db:SetProfile(value)
+                    CombatTextPlus:Print("Switched to profile: " .. value)
+                    self:ApplySettings()
+                end,
+                order = 1
+            },
+            deleteProfile = {
+                name = "Delete Profile",
+                type = "execute",
+                desc = "Delete the current profile.",
+                confirm = true,
+                confirmText = "Are you sure you want to delete this profile?",
+                func = function()
+                    local currentProfile = self.db:GetCurrentProfile()
+                    self.db:DeleteProfile(currentProfile)
+                    CombatTextPlus:Print("Deleted profile: " .. currentProfile)
+                end,
+                order = 2
+            },
+            copyProfile = {
+                name = "Copy From",
+                type = "select",
+                desc = "Copy settings from another profile.",
+                values = function() return self.db:GetProfiles() end,
+                set = function(_, value)
+                    self.db:CopyProfile(value)
+                    CombatTextPlus:Print("Copied profile: " .. value)
+                    self:ApplySettings()
+                end,
+                order = 3
+            }
+        }
+    }
+end
+
+function CombatTextPlus:ApplySettings()
+    -- Update Font
+    local fontPath = LSM:Fetch("font", db.profile.font or "Friz Quadrata TT")
+    frame.text:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
+
+    -- Update Text Color
+    frame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
+
+    -- Update any other relevant settings, such as minimap icon, scroll behavior, etc.
+    icon:Register("CombatTextPlus", CombatTextPlusLDB, db.profile.minimap)
+
+    -- Apply changes to active combat texts
+    for _, combatTextFrame in pairs(activeCombatTexts) do
+        combatTextFrame.text:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
+        combatTextFrame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
+        combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
+    end
+
+    -- Additional settings changes based on the current profile
+    self:ToggleEnabled(db.profile.enabled)
+    DisableBlizzardCombatText()
 end
 
 function CombatTextPlus:ToggleEnabled(value)
@@ -175,7 +252,7 @@ function CombatTextPlus:ToggleEnabled(value)
 end
 
 local damageAggregation = {}  
-local aggregationDelay = 0.1  
+local aggregationDelay = .05
 
 function CombatTextPlus:OnCombatLogEvent(...)
     local _, subEvent, _, sourceGUID, _, _, _, destGUID, _, _, _, spellId, spellName, school, amount = ...
@@ -1113,4 +1190,3 @@ local options = {
 
 AceConfig:RegisterOptionsTable("CombatTextPlus", options)
 AceConfigDialog:AddToBlizOptions("CombatTextPlus", "CombatTextPlus")
-
