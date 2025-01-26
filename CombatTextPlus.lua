@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v1.9 - 11.0.2
+-- v2.1 - 11.0.7
 
 local addonName = "CombatTextPlus"
 
@@ -60,6 +60,7 @@ local savedVariables = {
             chaos = 0,
             dot = 10,
             heal = 0,  -- Healing offset
+            crit = 5,
         },
         damageTypeFilters = {
             physical = true,
@@ -72,6 +73,7 @@ local savedVariables = {
             chaos = true,
             dot = true,
             heal = true,  -- Enable healing filter by default
+            crit = true,
         },
         damageTypeColors = {
             physical = {r = 1, g = 1, b = 1},  -- Default to white
@@ -84,6 +86,7 @@ local savedVariables = {
             chaos = {r = 1, g = 1, b = 1},     -- White by default
             dot = {r = 1, g = 1, b = 1},       -- White by default
             heal = {r = 1, g = 1, b = 1},      -- White by default for healing
+            crit = {r = 1, g = 1, b = 1},
         },
         labelColors = {
             physical = {r = 1, g = 1, b = 1},  -- Label colors set to white
@@ -96,11 +99,25 @@ local savedVariables = {
             chaos = {r = 1, g = 1, b = 1},
             dot = {r = 1, g = 1, b = 1},
             heal = {r = 1, g = 1, b = 1},      -- Healing label white by default
+            crit = {r = 1, g = 1, b = 1},
         },
-        minimap = { hide = false }, 
-        dotYOffsetMultiplier = .01  -- Default value to avoid nil
+        minimap = { hide = false },
+        dotYOffsetMultiplier = .01,  -- Default value to avoid nil
+         damageTypeFontSizes = {
+            physical = 24,
+            holy = 24,
+            fire = 24,
+            nature = 24,
+            frost = 24,
+            shadow = 24,
+            arcane = 24,
+            chaos = 24,
+            dot = 24,
+            heal = 24,
+            crit = 24,
+        }
     }
-}
+}  -- Closing brace for the savedVariables table
 
 local frame = CreateFrame("Frame", "CombatTextPlusFrame", UIParent)
 frame.text = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -155,9 +172,65 @@ function CombatTextPlus:OnInitialize()
                 heal = {}  -- Reset heal as well
             }
         end
-    end)  -- This closes the SetScript function
+    end)  
 
-end  -- This closes the OnInitialize function
+end  
+
+function CombatTextPlus:OnCombatLogEvent(...)
+    local _, subEvent, _, sourceGUID, _, _, _, destGUID, _, _, _, spellId, spellName, school, amount = ...
+    local isCritical = select(21, ...)  -- Detect critical hit from combat log event
+
+    if not db.profile.enabled then return end
+
+    -- Handle damage events
+    if subEvent == "SPELL_DAMAGE" or subEvent == "SWING_DAMAGE" or subEvent == "SPELL_PERIODIC_DAMAGE" then
+        if sourceGUID == UnitGUID("player") and amount and amount > 0 then
+            local damageType = self:GetDamageType(school, subEvent)
+            
+            -- If it's a critical hit, change the damage type to "crit"
+            if isCritical then
+                damageType = "crit"  -- Treat crit as its own damage type
+            end
+
+            if db.profile.damageTypeFilters[damageType] then
+                local key = destGUID .. "-" .. spellId .. "-" .. damageType
+                if not damageAggregation[key] then
+                    damageAggregation[key] = { amount = 0, timer = nil }
+                end
+
+                damageAggregation[key].amount = damageAggregation[key].amount + amount
+
+                if not damageAggregation[key].timer then
+                    damageAggregation[key].timer = C_Timer.NewTimer(aggregationDelay, function()
+                        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+                            if UnitGUID(nameplate.UnitFrame.unit) == destGUID then
+                                -- Pass isCritical to DisplayCombatText
+                                self:DisplayCombatText(nameplate, damageAggregation[key].amount, damageType, spellId, spellName, isCritical)
+                            end
+                        end
+                        damageAggregation[key] = nil  -- Clear the aggregation after use
+                    end)
+                end
+            end
+        end
+    end  -- End of damage events block
+
+    -- Handle healing events
+    if subEvent == "SPELL_HEAL" or subEvent == "SPELL_PERIODIC_HEAL" then
+        local isCriticalHeal = select(21, ...)
+        if sourceGUID == UnitGUID("player") and amount and amount > 0 then
+            -- Only show healing if the filter is enabled
+            if db.profile.damageTypeFilters.heal then
+                -- Display healing text on nameplates where possible
+                for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+                    if UnitGUID(nameplate.UnitFrame.unit) == destGUID then
+                        self:DisplayCombatText(nameplate, amount, "heal", spellId, spellName, isCriticalHeal)
+                    end
+                end
+            end
+        end
+    end  
+end
 
 function CombatTextPlus:SetupProfileOptions()
     -- Initialize the options table if it doesn't exist yet
@@ -256,6 +329,7 @@ local aggregationDelay = .05
 
 function CombatTextPlus:OnCombatLogEvent(...)
     local _, subEvent, _, sourceGUID, _, _, _, destGUID, _, _, _, spellId, spellName, school, amount = ...
+    local isCritical = select(21, ...)  -- Detect critical hit from combat log event
 
     if not db.profile.enabled then return end
 
@@ -263,7 +337,9 @@ function CombatTextPlus:OnCombatLogEvent(...)
     if subEvent == "SPELL_DAMAGE" or subEvent == "SWING_DAMAGE" or subEvent == "SPELL_PERIODIC_DAMAGE" then
         if sourceGUID == UnitGUID("player") and amount and amount > 0 then
             local damageType = self:GetDamageType(school, subEvent)
-            if db.profile.damageTypeFilters[damageType] then
+
+            -- If it's a critical hit, pass the isCritical flag to DisplayCombatText
+            if db.profile.damageTypeFilters[damageType] or (isCritical and db.profile.damageTypeFilters.crit) then
                 local key = destGUID .. "-" .. spellId .. "-" .. damageType
                 if not damageAggregation[key] then
                     damageAggregation[key] = { amount = 0, timer = nil }
@@ -275,15 +351,16 @@ function CombatTextPlus:OnCombatLogEvent(...)
                     damageAggregation[key].timer = C_Timer.NewTimer(aggregationDelay, function()
                         for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
                             if UnitGUID(nameplate.UnitFrame.unit) == destGUID then
-                                self:DisplayCombatText(nameplate, damageAggregation[key].amount, damageType, spellId, spellName)
+                                -- Pass isCritical to DisplayCombatText
+                                self:DisplayCombatText(nameplate, damageAggregation[key].amount, damageType, spellId, spellName, isCritical)
                             end
                         end
-                        damageAggregation[key] = nil
+                        damageAggregation[key] = nil  -- Clear the aggregation after use
                     end)
                 end
             end
         end
-    end
+    end  -- End of damage events block
 
     -- Handle healing events
     if subEvent == "SPELL_HEAL" or subEvent == "SPELL_PERIODIC_HEAL" then
@@ -299,41 +376,64 @@ function CombatTextPlus:OnCombatLogEvent(...)
                 end
             end
         end
-    end
+    end  
 end
 
-function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId, spellName, isCriticalHeal)
+
+function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId, spellName, isCritical)
     local formattedAmount = self:FormatNumber(amount)
     if formattedAmount then
         local combatTextFrame = self:CreateCombatTextFrame(nameplate, damageType)
 
-        -- Fetch the label for the damage type (if any)
-        local damageLabel = self:GetDamageTypeLabel(damageType)
+        -- Determine the font size based on the damage type
+        local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
 
-        -- Get the colors for the label and the damage/healing text
-        local labelColorR, labelColorG, labelColorB = self:GetLabelColor(damageType)
-        local damageColorR, damageColorG, damageColorB = self:GetDamageTypeColor(damageType)
+        -- Set the font size dynamically based on the damage type
+        combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), fontSize, "OUTLINE")
+        combatTextFrame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
 
-        -- Set the label text and color
-        if damageLabel ~= "" and combatTextFrame.label then
-            combatTextFrame.label:SetText(damageLabel)
-            combatTextFrame.label:SetTextColor(labelColorR, labelColorG, labelColorB)
+        -- Handle Critical Hits: Show "Crit" as the label and fetch the crit-specific color
+        if isCritical then
+            local damageLabel = "Crit"
+            combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), fontSize, "OUTLINE")  -- Use the selected font size for crit damage
+            combatTextFrame:SetAlpha(1)  -- Ensure full visibility
+
+            -- Fetch Crit Colors from the options (both label and text)
+            local critLabelColorR, critLabelColorG, critLabelColorB = self:GetLabelColor("crit")
+            local critDamageColorR, critDamageColorG, critDamageColorB = self:GetDamageTypeColor("crit")
+
+            -- Apply the crit colors to both label and text
+            if combatTextFrame.label then
+                combatTextFrame.label:SetTextColor(critLabelColorR, critLabelColorG, critLabelColorB)  -- Apply crit label color
+                combatTextFrame.label:SetText(damageLabel)
+            end
+            combatTextFrame.text:SetTextColor(critDamageColorR, critDamageColorG, critDamageColorB)
+        else
+            -- Handle non-crit hits
+            local damageLabel = self:GetDamageTypeLabel(damageType)
+            local labelColorR, labelColorG, labelColorB = self:GetLabelColor(damageType)
+            local damageColorR, damageColorG, damageColorB = self:GetDamageTypeColor(damageType)
+
+            if combatTextFrame.label then
+                combatTextFrame.label:SetTextColor(labelColorR, labelColorG, labelColorB)
+                combatTextFrame.label:SetText(damageLabel)
+            end
+            combatTextFrame.text:SetTextColor(damageColorR, damageColorG, damageColorB)
         end
 
-        -- Set the damage/healing text and color
+        -- Set and display text
         combatTextFrame.text:SetText(formattedAmount)
-        combatTextFrame.text:SetTextColor(damageColorR, damageColorG, damageColorB)
-
         combatTextFrame:SetAlpha(1)
         combatTextFrame:Show()
 
+        -- Scrolling behavior (unchanged)
         local startTime = GetTime()
         local index = #damageTypeLastYPositions[damageType] + 1
         table.insert(damageTypeLastYPositions[damageType], index)
-		
+
         combatTextFrame:SetScript("OnUpdate", function(self, elapsed)
             local now = GetTime()
-            local progress = (now - startTime) / (scrollDuration / db.profile.speedFactor * 10) 
+            local progress = (now - startTime) / (scrollDuration / db.profile.speedFactor * 10)
             if progress >= 1 then
                 combatTextFrame:Hide()
                 combatTextFrame:SetScript("OnUpdate", nil)
@@ -342,7 +442,7 @@ function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId
                 local xOffset, yOffset = CombatTextPlus:GetMovementOffsets(nameplate, damageType, progress, index)
                 combatTextFrame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
                 local alpha = 1 - progress
-                combatTextFrame:SetAlpha(alpha)  -- Fade out as it scrolls up
+                combatTextFrame:SetAlpha(alpha)
             end
         end)
     end
@@ -412,6 +512,8 @@ function CombatTextPlus:GetDamageTypeLabel(damageType)
         return "DOT"
     elseif damageType == "heal" then
         return "Heal"
+    elseif damageType == "crit" then
+        return "Crit"  -- Add crit label
     else
         return ""  -- Return empty if no label
     end
@@ -892,6 +994,22 @@ local options = {
                         color.r, color.g, color.b = r, g, b
                     end,
                     order = 10,
+					},
+					critLabelColor = {
+    name = "Crit Label Color",
+    type = "color",
+    desc = "Set the color for Critical hit label.",
+    get = function()
+        local color = db.profile.labelColors.crit
+        return color.r, color.g, color.b
+    end,
+    set = function(info, r, g, b)
+        local color = db.profile.labelColors.crit
+        color.r, color.g, color.b = r, g, b
+    end,
+    order = 11,
+
+
                 },
             },
             order = 10,
@@ -1017,6 +1135,14 @@ local options = {
                     get = function() return db.profile.damageTypeFilters.heal end,
                     set = function(info, value) db.profile.damageTypeFilters.heal = value end,
                     order = 10,
+					},
+					crit = {
+    name = "Critical Hits",
+    type = "toggle",
+    desc = "Enable or disable the display of Critical hits.",
+    get = function() return db.profile.damageTypeFilters.crit end,
+    set = function(info, value) db.profile.damageTypeFilters.crit = value end,
+    order = 11,
                 },
             },
             order = 11,
@@ -1166,6 +1292,20 @@ local options = {
                         color.r, color.g, color.b = r, g, b
                     end,
                     order = 10,
+					},
+					critColor = {
+    name = "Crit Damage Color",
+    type = "color",
+    desc = "Set the color for Critical hit text.",
+    get = function()
+        local color = db.profile.damageTypeColors.crit
+        return color.r, color.g, color.b
+    end,
+    set = function(info, r, g, b)
+        local color = db.profile.damageTypeColors.crit
+        color.r, color.g, color.b = r, g, b
+    end,
+    order = 11,
                 },
             },
             order = 12,
@@ -1184,6 +1324,136 @@ local options = {
                 end
             end,
             order = 13,
+			}, 
+			damageTypeFontSizes = {
+            name = "Damage Type Font Sizes",
+            type = "group",
+            inline = true,
+            desc = "Customize the font size for each damage type.",
+            args = {
+                physicalFontSize = {
+                    name = "Physical Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Physical damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.physical end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.physical = value end,
+                    order = 1,
+                },
+                holyFontSize = {
+                    name = "Holy Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Holy damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.holy end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.holy = value end,
+                    order = 2,
+                },
+                fireFontSize = {
+                    name = "Fire Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Fire damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.fire end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.fire = value end,
+                    order = 3,
+                },
+                natureFontSize = {
+                    name = "Nature Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Nature damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.nature end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.nature = value end,
+                    order = 4,
+                },
+                frostFontSize = {
+                    name = "Frost Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Frost damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.frost end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.frost = value end,
+                    order = 5,
+                },
+                shadowFontSize = {
+                    name = "Shadow Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Shadow damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.shadow end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.shadow = value end,
+                    order = 6,
+                },
+                arcaneFontSize = {
+                    name = "Arcane Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Arcane damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.arcane end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.arcane = value end,
+                    order = 7,
+                },
+                chaosFontSize = {
+                    name = "Chaos Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Chaos damage.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.chaos end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.chaos = value end,
+                    order = 8,
+                },
+                dotFontSize = {
+                    name = "DOT Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for DOT effects.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.dot end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.dot = value end,
+                    order = 9,
+                },
+                healFontSize = {
+                    name = "Healing Font Size",
+                    type = "range",
+                    desc = "Set the font size for Healing effects.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.heal end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.heal = value end,
+                    order = 10,
+                },
+                critFontSize = {
+                    name = "Crit Damage Font Size",
+                    type = "range",
+                    desc = "Set the font size for Critical hit text.",
+                    min = 6,
+                    max = 36,
+                    step = 1,
+                    get = function() return db.profile.damageTypeFontSizes.crit end,
+                    set = function(info, value) db.profile.damageTypeFontSizes.crit = value end,
+                    order = 11,
+                },
+            },
+            order = 14,
         },
     },
 }
