@@ -95,6 +95,46 @@ local CombatTextPlusLDB = LDB:NewDataObject("CombatTextPlus", {
     end,
 })
 
+function CombatTextPlus:ShowPreviewCombatText()
+    local previewTypes = {"physical", "fire", "heal", "crit"}
+    local previewValues = {
+        physical = 1234,
+        fire = 5678,
+        heal = 3456,
+        crit = 9999,
+    }
+    local previewLabels = {
+        physical = "Physical",
+        fire = "Fire",
+        heal = "Heal",
+        crit = "Crit",
+    }
+    
+    local anchor = nil
+    for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+        anchor = nameplate
+        break
+    end
+    if not anchor then
+        anchor = CreateFrame("Frame", nil, UIParent)
+        anchor:SetSize(1, 1)
+        anchor:SetPoint("CENTER", UIParent, "CENTER", -600, 0) 
+    end
+
+    for i, damageType in ipairs(previewTypes) do
+        C_Timer.After((i-1)*0.25, function()
+            CombatTextPlus:DisplayCombatText(
+                anchor, 
+                previewValues[damageType], 
+                damageType, 
+                nil, 
+                previewLabels[damageType], 
+                damageType=="crit"
+            )
+        end)
+    end
+end
+
 function CombatTextPlus:GetEasedProgress(progress)
     local easing = db.profile.animationEasing
     if easing == "linear" then
@@ -108,39 +148,54 @@ function CombatTextPlus:GetEasedProgress(progress)
 end
 
 function CombatTextPlus:ApplyAnimationStyle(frame, nameplate, damageType, progress, index)
+    local function ClampAlpha(a)
+        return math.max(0, math.min(1, a or 0))
+    end
+
     local style = db.profile.animationStyle
     local eased = self:GetEasedProgress(progress)
     if style == "fade" then
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-        frame:SetAlpha(1 - eased)
+        frame:SetAlpha(ClampAlpha(1 - eased))
     elseif style == "bounce" then
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        yOffset = yOffset + math.abs(math.sin(eased * math.pi) * 30)
+        yOffset = yOffset + math.abs(math.sin(eased * math.pi) * 60)
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-        frame:SetAlpha(1 - eased)
+        frame:SetAlpha(ClampAlpha(1 - eased))
     elseif style == "shake" then
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        xOffset = xOffset + math.sin(eased * 20) * 10
+        xOffset = xOffset + math.sin(eased * 30) * 25
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-        frame:SetAlpha(1 - eased)
+        frame:SetAlpha(ClampAlpha(1 - eased))
     elseif style == "spiral" then
-        local angle = eased * 4 * math.pi
-        local radius = 40 * eased
+        local angle = eased * 8 * math.pi
+        local radius = 80 * eased
         local xOffset = math.cos(angle) * radius
         local yOffset = math.sin(angle) * radius + (db.profile.maxYOffset * eased * db.profile.speedFactor)
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-        frame:SetAlpha(1 - eased)
+        frame:SetAlpha(ClampAlpha(1 - eased))
     elseif style == "scale" then
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        local scale = 1 + eased
+        local scale = 1 + eased * 2
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-        frame:SetAlpha(1 - eased)
+        frame:SetAlpha(ClampAlpha(1 - eased))
         frame:SetScale(scale)
-    else -- fallback
+    elseif style == "pop" then
+        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
+        local popScale
+        if eased < 0.2 then
+            popScale = 1 + eased * 4
+        else
+            popScale = 1.8 - (eased - 0.2) * 2
+        end
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+        frame:SetScale(popScale)
+    else
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
-        frame:SetAlpha(1 - eased)
+        frame:SetAlpha(ClampAlpha(1 - eased))
     end
 end
 
@@ -1290,32 +1345,43 @@ local options = {
             order = 14,
 			    },
 				animationStyle = {
-    name = "Animation Style",
-    type = "select",
-    desc = "Choose how the combat text animates.",
-    values = {
-        fade = "Fade",
-        bounce = "Bounce",
-        shake = "Shake",
-        spiral = "Spiral",
-        scale = "Scale",
-    },
-    get = function() return db.profile.animationStyle end,
-    set = function(_, value) db.profile.animationStyle = value end,
-    order = 15,
-},
-animationEasing = {
-    name = "Animation Easing",
-    type = "select",
-    desc = "Choose the easing function for the animation.",
-    values = {
-        linear = "Linear",
-        quadratic = "Quadratic",
-        exponential = "Exponential",
-    },
-    get = function() return db.profile.animationEasing end,
-    set = function(_, value) db.profile.animationEasing = value end,
-    order = 16,
+                    name = "Animation Style",
+                    type = "select",
+                    desc = "Choose how the combat text animates.",
+                    values = {
+                    fade = "Fade",
+                    bounce = "Bounce",
+                    shake = "Shake",
+                    spiral = "Spiral",
+                    scale = "Scale",
+                    pop = "Pop",
+                },
+                   get = function() return db.profile.animationStyle end,
+                   set = function(_, value) db.profile.animationStyle = value end,
+             order = 15,
+                },
+                animationEasing = {
+                   name = "Animation Easing",
+                   type = "select",
+                   desc = "Choose the easing function for the animation.",
+                   values = {
+                   linear = "Linear",
+                   quadratic = "Quadratic",
+                   exponential = "Exponential",
+                },
+                   get = function() return db.profile.animationEasing end,
+                   set = function(_, value) db.profile.animationEasing = value end,
+            order = 16,
+	            };
+	             preview = {
+                   name = "Preview Combat Text",
+                   type = "execute",
+                   desc = "Show sample combat text using current settings.",
+                   func = function()
+                   CombatTextPlus:ShowPreviewCombatText()
+                   end,
+             order = 17,
+
         },
     },
 }
