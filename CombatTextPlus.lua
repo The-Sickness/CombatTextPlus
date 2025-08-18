@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v2.1 - 11.0.7
+-- v2.2 - 11.2
 
 local addonName = "CombatTextPlus"
 
@@ -158,9 +158,15 @@ function CombatTextPlus:ApplyAnimationStyle(frame, nameplate, damageType, progre
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
         frame:SetAlpha(ClampAlpha(1 - eased))
+	elseif style == "off" then
+        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+        frame:SetScale(1)	
     elseif style == "bounce" then
         local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        yOffset = yOffset + math.abs(math.sin(eased * math.pi) * 60)
+        local bounce = math.abs(math.sin(eased * math.pi * 3) * (1 - eased) * 100)
+        yOffset = yOffset + bounce
         frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
         frame:SetAlpha(ClampAlpha(1 - eased))
     elseif style == "shake" then
@@ -341,7 +347,9 @@ function CombatTextPlus:ApplySettings()
     frame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
     icon:Register("CombatTextPlus", CombatTextPlusLDB, db.profile.minimap)
     for _, combatTextFrame in pairs(activeCombatTexts) do
-        combatTextFrame.text:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
+        local damageType = combatTextFrame.damageType or "physical"
+        local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
+        combatTextFrame.text:SetFont(fontPath, fontSize, "OUTLINE")
         combatTextFrame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
         combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
     end
@@ -459,6 +467,7 @@ end
 
 function CombatTextPlus:CreateCombatTextFrame(nameplate, damageType)
     local combatTextFrame = CreateFrame("Frame", nil, nameplate)
+	combatTextFrame.damageType = damageType 
     combatTextFrame:SetSize(200, 50)
     combatTextFrame:SetPoint("CENTER", nameplate, "TOP", 0, 10)
     local fontPath = LSM:Fetch("font", db.profile.font)
@@ -563,116 +572,16 @@ local options = {
             inline = true,
             desc = "Customize the horizontal movement of text based on damage type.",
             args = {
-                physical = {
-                    name = "Physical Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Physical damage.",
-                    get = function() return db.profile.damageTypeOffsets.physical end,
-                    set = function(info, value) db.profile.damageTypeOffsets.physical = value end,
-                    order = 1,
-                },
-                holy = {
-                    name = "Holy Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Holy damage.",
-                    get = function() return db.profile.damageTypeOffsets.holy end,
-                    set = function(info, value) db.profile.damageTypeOffsets.holy = value end,
-                    order = 2,
-                },
-                fire = {
-                    name = "Fire Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Fire damage.",
-                    get = function() return db.profile.damageTypeOffsets.fire end,
-                    set = function(info, value) db.profile.damageTypeOffsets.fire = value end,
-                    order = 3,
-                },
-                nature = {
-                    name = "Nature Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Nature damage.",
-                    get = function() return db.profile.damageTypeOffsets.nature end,
-                    set = function(info, value) db.profile.damageTypeOffsets.nature = value end,
-                    order = 4,
-                },
-                frost = {
-                    name = "Frost Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Frost damage.",
-                    get = function() return db.profile.damageTypeOffsets.frost end,
-                    set = function(info, value) db.profile.damageTypeOffsets.frost = value end,
-                    order = 5,
-                },
-                shadow = {
-                    name = "Shadow Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Shadow damage.",
-                    get = function() return db.profile.damageTypeOffsets.shadow end,
-                    set = function(info, value) db.profile.damageTypeOffsets.shadow = value end,
-                    order = 6,
-                },
-                arcane = {
-                    name = "Arcane Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Arcane damage.",
-                    get = function() return db.profile.damageTypeOffsets.arcane end,
-                    set = function(info, value) db.profile.damageTypeOffsets.arcane = value end,
-                    order = 7,
-                },
-                chaos = {
-                    name = "Chaos Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Chaos damage.",
-                    get = function() return db.profile.damageTypeOffsets.chaos end,
-                    set = function(info, value) db.profile.damageTypeOffsets.chaos = value end,
-                    order = 8,
-                },
-                dot = {
-                    name = "DOT Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for DOT effects.",
-                    get = function() return db.profile.damageTypeOffsets.dot end,
-                    set = function(info, value) db.profile.damageTypeOffsets.dot = value end,
-                    order = 9,
-                },
-                heal = {
-                    name = "Heal Offset",
-                    type = "range",
-                    min = -50,
-                    max = 50,
-                    step = 1,
-                    desc = "Adjust the horizontal movement of the combat text for Healing.",
-                    get = function() return db.profile.damageTypeOffsets.heal end,
-                    set = function(info, value) db.profile.damageTypeOffsets.heal = value end,
-                    order = 10,
-                },
+                physical = { name = "Physical Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Physical damage.", get = function() return db.profile.damageTypeOffsets.physical end, set = function(info, value) db.profile.damageTypeOffsets.physical = value end, order = 1 },
+                holy = { name = "Holy Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Holy damage.", get = function() return db.profile.damageTypeOffsets.holy end, set = function(info, value) db.profile.damageTypeOffsets.holy = value end, order = 2 },
+                fire = { name = "Fire Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Fire damage.", get = function() return db.profile.damageTypeOffsets.fire end, set = function(info, value) db.profile.damageTypeOffsets.fire = value end, order = 3 },
+                nature = { name = "Nature Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Nature damage.", get = function() return db.profile.damageTypeOffsets.nature end, set = function(info, value) db.profile.damageTypeOffsets.nature = value end, order = 4 },
+                frost = { name = "Frost Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Frost damage.", get = function() return db.profile.damageTypeOffsets.frost end, set = function(info, value) db.profile.damageTypeOffsets.frost = value end, order = 5 },
+                shadow = { name = "Shadow Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Shadow damage.", get = function() return db.profile.damageTypeOffsets.shadow end, set = function(info, value) db.profile.damageTypeOffsets.shadow = value end, order = 6 },
+                arcane = { name = "Arcane Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Arcane damage.", get = function() return db.profile.damageTypeOffsets.arcane end, set = function(info, value) db.profile.damageTypeOffsets.arcane = value end, order = 7 },
+                chaos = { name = "Chaos Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Chaos damage.", get = function() return db.profile.damageTypeOffsets.chaos end, set = function(info, value) db.profile.damageTypeOffsets.chaos = value end, order = 8 },
+                dot = { name = "DOT Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for DOT effects.", get = function() return db.profile.damageTypeOffsets.dot end, set = function(info, value) db.profile.damageTypeOffsets.dot = value end, order = 9 },
+                heal = { name = "Heal Offset", type = "range", min = -50, max = 50, step = 1, desc = "Adjust the horizontal movement of the combat text for Healing.", get = function() return db.profile.damageTypeOffsets.heal end, set = function(info, value) db.profile.damageTypeOffsets.heal = value end, order = 10 },
             },
             order = 5,
         },
@@ -694,32 +603,32 @@ local options = {
             min = 8,
             max = 32,
             step = 1,
-            get = function()
-                return db.profile.fontSize
-            end,
+            get = function() return db.profile.fontSize end,
             set = function(info, value)
                 db.profile.fontSize = value
+                for k,_ in pairs(db.profile.damageTypeFontSizes) do
+                    db.profile.damageTypeFontSizes[k] = value
+                end
                 for _, combatTextFrame in pairs(activeCombatTexts) do
+                    local damageType = combatTextFrame.damageType or "physical"
                     combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                 end
             end,
             order = 7,
         },
         labelFontSize = {
-    name = "Label Font Size",
-    type = "range",
-    desc = "Set the font size of the damage type label (e.g., Physical, Fire, Shadow, DOT).",
-    min = 8,
-    max = 32,
-    step = 1,
-    get = function()
-        return db.profile.labelFontSize
-    end,
-    set = function(info, value)
-        db.profile.labelFontSize = value
-        CombatTextPlus:UpdateLabelFontSize()  -- Ensure labels are updated
-    end,
-    order = 8,
+            name = "Label Font Size",
+            type = "range",
+            desc = "Set the font size of the damage type label (e.g., Physical, Fire, Shadow, DOT).",
+            min = 8,
+            max = 32,
+            step = 1,
+            get = function() return db.profile.labelFontSize end,
+            set = function(info, value)
+                db.profile.labelFontSize = value
+                CombatTextPlus:UpdateLabelFontSize()
+            end,
+            order = 8,
         },
         font = {
             name = "Font",
@@ -727,13 +636,13 @@ local options = {
             desc = "Set the font of the combat text.",
             values = LSM:HashTable("font"),
             dialogControl = "LSM30_Font",
-            get = function()
-                return db.profile.font
-            end,
+            get = function() return db.profile.font end,
             set = function(info, value)
                 db.profile.font = value
                 for _, combatTextFrame in pairs(activeCombatTexts) do
-                    combatTextFrame.text:SetFont(LSM:Fetch("font", value), db.profile.fontSize, "OUTLINE")
+                    local damageType = combatTextFrame.damageType or "physical"
+                    local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
+                    combatTextFrame.text:SetFont(LSM:Fetch("font", value), fontSize, "OUTLINE")
                 end
             end,
             order = 9,
@@ -748,157 +657,89 @@ local options = {
                     name = "Physical Label Color",
                     type = "color",
                     desc = "Set the color of the 'Physical' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.physical
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.physical
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.physical; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.physical; color.r, color.g, color.b = r, g, b end,
                     order = 1,
                 },
                 holyLabelColor = {
                     name = "Holy Label Color",
                     type = "color",
                     desc = "Set the color of the 'Holy' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.holy
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.holy
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.holy; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.holy; color.r, color.g, color.b = r, g, b end,
                     order = 2,
                 },
                 fireLabelColor = {
                     name = "Fire Label Color",
                     type = "color",
                     desc = "Set the color of the 'Fire' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.fire
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.fire
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.fire; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.fire; color.r, color.g, color.b = r, g, b end,
                     order = 3,
                 },
                 natureLabelColor = {
                     name = "Nature Label Color",
                     type = "color",
                     desc = "Set the color of the 'Nature' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.nature
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.nature
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.nature; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.nature; color.r, color.g, color.b = r, g, b end,
                     order = 4,
                 },
                 frostLabelColor = {
                     name = "Frost Label Color",
                     type = "color",
                     desc = "Set the color of the 'Frost' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.frost
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.frost
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.frost; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.frost; color.r, color.g, color.b = r, g, b end,
                     order = 5,
                 },
                 shadowLabelColor = {
                     name = "Shadow Label Color",
                     type = "color",
                     desc = "Set the color of the 'Shadow' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.shadow
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.shadow
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.shadow; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.shadow; color.r, color.g, color.b = r, g, b end,
                     order = 6,
                 },
                 arcaneLabelColor = {
                     name = "Arcane Label Color",
                     type = "color",
                     desc = "Set the color of the 'Arcane' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.arcane
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.arcane
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.arcane; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.arcane; color.r, color.g, color.b = r, g, b end,
                     order = 7,
                 },
                 chaosLabelColor = {
                     name = "Chaos Label Color",
                     type = "color",
                     desc = "Set the color of the 'Chaos' damage label.",
-                    get = function()
-                        local color = db.profile.labelColors.chaos
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.chaos
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.chaos; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.chaos; color.r, color.g, color.b = r, g, b end,
                     order = 8,
                 },
                 dotLabelColor = {
                     name = "DOT Label Color",
                     type = "color",
                     desc = "Set the color of the 'DOT' label.",
-                    get = function()
-                        local color = db.profile.labelColors.dot
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.dot
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.dot; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.dot; color.r, color.g, color.b = r, g, b end,
                     order = 9,
                 },
                 healLabelColor = {
                     name = "Heal Label Color",
                     type = "color",
                     desc = "Set the color of the 'Heal' label.",
-                    get = function()
-                        local color = db.profile.labelColors.heal
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.labelColors.heal
-                        color.r, color.g, color.b = r, g, b
-                    end,
+                    get = function() local color = db.profile.labelColors.heal; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.heal; color.r, color.g, color.b = r, g, b end,
                     order = 10,
-					},
-					critLabelColor = {
-    name = "Crit Label Color",
-    type = "color",
-    desc = "Set the color for Critical hit label.",
-    get = function()
-        local color = db.profile.labelColors.crit
-        return color.r, color.g, color.b
-    end,
-    set = function(info, r, g, b)
-        local color = db.profile.labelColors.crit
-        color.r, color.g, color.b = r, g, b
-    end,
-    order = 11,
-
-
+                },
+                critLabelColor = {
+                    name = "Crit Label Color",
+                    type = "color",
+                    desc = "Set the color for Critical hit label.",
+                    get = function() local color = db.profile.labelColors.crit; return color.r, color.g, color.b end,
+                    set = function(info, r, g, b) local color = db.profile.labelColors.crit; color.r, color.g, color.b = r, g, b end,
+                    order = 11,
                 },
             },
             order = 10,
@@ -909,130 +750,17 @@ local options = {
             inline = true,
             desc = "Select which types of damage you want to see displayed during combat.",
             args = {
-                physical = {
-                    name = "Physical Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Physical damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.physical
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.physical = value
-                    end,
-                    order = 1,
-                },
-                holy = {
-                    name = "Holy Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Holy damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.holy
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.holy = value
-                    end,
-                    order = 2,
-                },
-                fire = {
-                    name = "Fire Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Fire damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.fire
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.fire = value
-                    end,
-                    order = 3,
-                },
-                nature = {
-                    name = "Nature Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Nature damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.nature
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.nature = value
-                    end,
-                    order = 4,
-                },
-                frost = {
-                    name = "Frost Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Frost damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.frost
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.frost = value
-                    end,
-                    order = 5,
-                },
-                shadow = {
-                    name = "Shadow Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Shadow damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.shadow
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.shadow = value
-                    end,
-                    order = 6,
-                },
-                arcane = {
-                    name = "Arcane Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Arcane damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.arcane
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.arcane = value
-                    end,
-                    order = 7,
-                },
-                chaos = {
-                    name = "Chaos Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Chaos damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.chaos
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.chaos = value
-                    end,
-                    order = 8,
-                },
-                dot = {
-                    name = "DOT Damage",
-                    type = "toggle",
-                    desc = "Enable or disable the display of DOT damage.",
-                    get = function()
-                        return db.profile.damageTypeFilters.dot
-                    end,
-                    set = function(info, value)
-                        db.profile.damageTypeFilters.dot = value
-                    end,
-                    order = 9,
-                },
-                heal = {
-                    name = "Healing",
-                    type = "toggle",
-                    desc = "Enable or disable the display of Healing.",
-                    get = function() return db.profile.damageTypeFilters.heal end,
-                    set = function(info, value) db.profile.damageTypeFilters.heal = value end,
-                    order = 10,
-					},
-					crit = {
-    name = "Critical Hits",
-    type = "toggle",
-    desc = "Enable or disable the display of Critical hits.",
-    get = function() return db.profile.damageTypeFilters.crit end,
-    set = function(info, value) db.profile.damageTypeFilters.crit = value end,
-    order = 11,
-                },
+                physical = { name = "Physical Damage", type = "toggle", desc = "Enable or disable the display of Physical damage.", get = function() return db.profile.damageTypeFilters.physical end, set = function(info, value) db.profile.damageTypeFilters.physical = value end, order = 1 },
+                holy = { name = "Holy Damage", type = "toggle", desc = "Enable or disable the display of Holy damage.", get = function() return db.profile.damageTypeFilters.holy end, set = function(info, value) db.profile.damageTypeFilters.holy = value end, order = 2 },
+                fire = { name = "Fire Damage", type = "toggle", desc = "Enable or disable the display of Fire damage.", get = function() return db.profile.damageTypeFilters.fire end, set = function(info, value) db.profile.damageTypeFilters.fire = value end, order = 3 },
+                nature = { name = "Nature Damage", type = "toggle", desc = "Enable or disable the display of Nature damage.", get = function() return db.profile.damageTypeFilters.nature end, set = function(info, value) db.profile.damageTypeFilters.nature = value end, order = 4 },
+                frost = { name = "Frost Damage", type = "toggle", desc = "Enable or disable the display of Frost damage.", get = function() return db.profile.damageTypeFilters.frost end, set = function(info, value) db.profile.damageTypeFilters.frost = value end, order = 5 },
+                shadow = { name = "Shadow Damage", type = "toggle", desc = "Enable or disable the display of Shadow damage.", get = function() return db.profile.damageTypeFilters.shadow end, set = function(info, value) db.profile.damageTypeFilters.shadow = value end, order = 6 },
+                arcane = { name = "Arcane Damage", type = "toggle", desc = "Enable or disable the display of Arcane damage.", get = function() return db.profile.damageTypeFilters.arcane end, set = function(info, value) db.profile.damageTypeFilters.arcane = value end, order = 7 },
+                chaos = { name = "Chaos Damage", type = "toggle", desc = "Enable or disable the display of Chaos damage.", get = function() return db.profile.damageTypeFilters.chaos end, set = function(info, value) db.profile.damageTypeFilters.chaos = value end, order = 8 },
+                dot = { name = "DOT Damage", type = "toggle", desc = "Enable or disable the display of DOT damage.", get = function() return db.profile.damageTypeFilters.dot end, set = function(info, value) db.profile.damageTypeFilters.dot = value end, order = 9 },
+                heal = { name = "Healing", type = "toggle", desc = "Enable or disable the display of Healing.", get = function() return db.profile.damageTypeFilters.heal end, set = function(info, value) db.profile.damageTypeFilters.heal = value end, order = 10 },
+                crit = { name = "Critical Hits", type = "toggle", desc = "Enable or disable the display of Critical hits.", get = function() return db.profile.damageTypeFilters.crit end, set = function(info, value) db.profile.damageTypeFilters.crit = value end, order = 11 },
             },
             order = 11,
         },
@@ -1042,160 +770,17 @@ local options = {
             inline = true,
             desc = "Customize the color of the combat text for each damage type.",
             args = {
-                physicalColor = {
-                    name = "Physical Damage Color",
-                    type = "color",
-                    desc = "Set the color for Physical damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.physical
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.physical
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 1,
-                },
-                holyColor = {
-                    name = "Holy Damage Color",
-                    type = "color",
-                    desc = "Set the color for Holy damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.holy
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.holy
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 2,
-                },
-                fireColor = {
-                    name = "Fire Damage Color",
-                    type = "color",
-                    desc = "Set the color for Fire damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.fire
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.fire
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 3,
-                },
-                natureColor = {
-                    name = "Nature Damage Color",
-                    type = "color",
-                    desc = "Set the color for Nature damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.nature
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.nature
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 4,
-                },
-                frostColor = {
-                    name = "Frost Damage Color",
-                    type = "color",
-                    desc = "Set the color for Frost damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.frost
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.frost
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 5,
-                },
-                shadowColor = {
-                    name = "Shadow Damage Color",
-                    type = "color",
-                    desc = "Set the color for Shadow damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.shadow
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.shadow
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 6,
-                },
-                arcaneColor = {
-                    name = "Arcane Damage Color",
-                    type = "color",
-                    desc = "Set the color for Arcane damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.arcane
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.arcane
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 7,
-                },
-                chaosColor = {
-                    name = "Chaos Damage Color",
-                    type = "color",
-                    desc = "Set the color for Chaos damage.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.chaos
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.chaos
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 8,
-                },
-                dotColor = {
-                    name = "DOT Damage Color",
-                    type = "color",
-                    desc = "Set the color for DOT effects.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.dot
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.dot
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 9,
-                },
-                healColor = {
-                    name = "Healing Color",
-                    type = "color",
-                    desc = "Set the color for Healing effects.",
-                    get = function()
-                        local color = db.profile.damageTypeColors.heal
-                        return color.r, color.g, color.b
-                    end,
-                    set = function(info, r, g, b)
-                        local color = db.profile.damageTypeColors.heal
-                        color.r, color.g, color.b = r, g, b
-                    end,
-                    order = 10,
-					},
-					critColor = {
-    name = "Crit Damage Color",
-    type = "color",
-    desc = "Set the color for Critical hit text.",
-    get = function()
-        local color = db.profile.damageTypeColors.crit
-        return color.r, color.g, color.b
-    end,
-    set = function(info, r, g, b)
-        local color = db.profile.damageTypeColors.crit
-        color.r, color.g, color.b = r, g, b
-    end,
-    order = 11,
-                },
+                physicalColor = { name = "Physical Damage Color", type = "color", desc = "Set the color for Physical damage.", get = function() local color = db.profile.damageTypeColors.physical; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.physical; color.r, color.g, color.b = r, g, b end, order = 1 },
+                holyColor = { name = "Holy Damage Color", type = "color", desc = "Set the color for Holy damage.", get = function() local color = db.profile.damageTypeColors.holy; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.holy; color.r, color.g, color.b = r, g, b end, order = 2 },
+                fireColor = { name = "Fire Damage Color", type = "color", desc = "Set the color for Fire damage.", get = function() local color = db.profile.damageTypeColors.fire; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.fire; color.r, color.g, color.b = r, g, b end, order = 3 },
+                natureColor = { name = "Nature Damage Color", type = "color", desc = "Set the color for Nature damage.", get = function() local color = db.profile.damageTypeColors.nature; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.nature; color.r, color.g, color.b = r, g, b end, order = 4 },
+                frostColor = { name = "Frost Damage Color", type = "color", desc = "Set the color for Frost damage.", get = function() local color = db.profile.damageTypeColors.frost; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.frost; color.r, color.g, color.b = r, g, b end, order = 5 },
+                shadowColor = { name = "Shadow Damage Color", type = "color", desc = "Set the color for Shadow damage.", get = function() local color = db.profile.damageTypeColors.shadow; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.shadow; color.r, color.g, color.b = r, g, b end, order = 6 },
+                arcaneColor = { name = "Arcane Damage Color", type = "color", desc = "Set the color for Arcane damage.", get = function() local color = db.profile.damageTypeColors.arcane; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.arcane; color.r, color.g, color.b = r, g, b end, order = 7 },
+                chaosColor = { name = "Chaos Damage Color", type = "color", desc = "Set the color for Chaos damage.", get = function() local color = db.profile.damageTypeColors.chaos; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.chaos; color.r, color.g, color.b = r, g, b end, order = 8 },
+                dotColor = { name = "DOT Damage Color", type = "color", desc = "Set the color for DOT effects.", get = function() local color = db.profile.damageTypeColors.dot; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.dot; color.r, color.g, color.b = r, g, b end, order = 9 },
+                healColor = { name = "Healing Color", type = "color", desc = "Set the color for Healing effects.", get = function() local color = db.profile.damageTypeColors.heal; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.heal; color.r, color.g, color.b = r, g, b end, order = 10 },
+                critColor = { name = "Crit Damage Color", type = "color", desc = "Set the color for Critical hit text.", get = function() local color = db.profile.damageTypeColors.crit; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.crit; color.r, color.g, color.b = r, g, b end, order = 11 },
             },
             order = 12,
         },
@@ -1213,8 +798,8 @@ local options = {
                 end
             end,
             order = 13,
-			}, 
-			damageTypeFontSizes = {
+        },
+        damageTypeFontSizes = {
             name = "Damage Type Font Sizes",
             type = "group",
             inline = true,
@@ -1228,7 +813,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.physical end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.physical = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.physical = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "physical" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 1,
                 },
                 holyFontSize = {
@@ -1239,7 +831,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.holy end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.holy = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.holy = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "holy" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 2,
                 },
                 fireFontSize = {
@@ -1250,7 +849,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.fire end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.fire = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.fire = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "fire" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 3,
                 },
                 natureFontSize = {
@@ -1261,7 +867,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.nature end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.nature = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.nature = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "nature" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 4,
                 },
                 frostFontSize = {
@@ -1272,7 +885,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.frost end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.frost = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.frost = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "frost" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 5,
                 },
                 shadowFontSize = {
@@ -1283,7 +903,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.shadow end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.shadow = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.shadow = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "shadow" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 6,
                 },
                 arcaneFontSize = {
@@ -1294,7 +921,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.arcane end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.arcane = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.arcane = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "arcane" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 7,
                 },
                 chaosFontSize = {
@@ -1305,7 +939,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.chaos end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.chaos = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.chaos = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "chaos" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 8,
                 },
                 dotFontSize = {
@@ -1316,7 +957,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.dot end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.dot = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.dot = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "dot" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 9,
                 },
                 healFontSize = {
@@ -1327,7 +975,14 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.heal end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.heal = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.heal = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "heal" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 10,
                 },
                 critFontSize = {
@@ -1338,50 +993,57 @@ local options = {
                     max = 36,
                     step = 1,
                     get = function() return db.profile.damageTypeFontSizes.crit end,
-                    set = function(info, value) db.profile.damageTypeFontSizes.crit = value end,
+                    set = function(info, value)
+                        db.profile.damageTypeFontSizes.crit = value
+                        for _, combatTextFrame in pairs(activeCombatTexts) do
+                            if combatTextFrame.damageType == "crit" then
+                                combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                            end
+                        end
+                    end,
                     order = 11,
                 },
             },
             order = 14,
-			    },
-				animationStyle = {
-                    name = "Animation Style",
-                    type = "select",
-                    desc = "Choose how the combat text animates.",
-                    values = {
-                    fade = "Fade",
-                    bounce = "Bounce",
-                    shake = "Shake",
-                    spiral = "Spiral",
-                    scale = "Scale",
-                    pop = "Pop",
-                },
-                   get = function() return db.profile.animationStyle end,
-                   set = function(_, value) db.profile.animationStyle = value end,
-             order = 15,
-                },
-                animationEasing = {
-                   name = "Animation Easing",
-                   type = "select",
-                   desc = "Choose the easing function for the animation.",
-                   values = {
-                   linear = "Linear",
-                   quadratic = "Quadratic",
-                   exponential = "Exponential",
-                },
-                   get = function() return db.profile.animationEasing end,
-                   set = function(_, value) db.profile.animationEasing = value end,
+        },
+        animationStyle = {
+            name = "Animation Style",
+            type = "select",
+            desc = "Choose how the combat text animates.",
+            values = {
+			    off = "Off (Normal)",
+                fade = "Fade",
+                bounce = "Bounce",
+                shake = "Shake",
+                spiral = "Spiral",
+                scale = "Scale",
+                pop = "Pop",
+            },
+            get = function() return db.profile.animationStyle end,
+            set = function(_, value) db.profile.animationStyle = value end,
+            order = 15,
+        },
+        animationEasing = {
+            name = "Animation Easing",
+            type = "select",
+            desc = "Choose the easing function for the animation.",
+            values = {
+                linear = "Linear",
+                quadratic = "Quadratic",
+                exponential = "Exponential",
+            },
+            get = function() return db.profile.animationEasing end,
+            set = function(_, value) db.profile.animationEasing = value end,
             order = 16,
-	            };
-	             preview = {
-                   name = "Preview Combat Text",
-                   type = "execute",
-                   desc = "Show sample combat text using current settings.",
-                   func = function()
-                   CombatTextPlus:ShowPreviewCombatText()
-                   end,
-             order = 17,
-
+        },
+        preview = {
+            name = "Preview Combat Text",
+            type = "execute",
+            desc = "Show sample combat text using current settings.",
+            func = function()
+                CombatTextPlus:ShowPreviewCombatText()
+            end,
+            order = 17,
         },
     },
 }
