@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v2.2 - 11.2
+-- v2.4 - 11.2.5
 
 local addonName = "CombatTextPlus"
 
@@ -7,8 +7,8 @@ local AceAddon = LibStub("AceAddon-3.0")
 local AceConfig = LibStub("AceConfig-3.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 local LSM = LibStub("LibSharedMedia-3.0")
-local LDB = LibStub("LibDataBroker-1.1") 
-local icon = LibStub("LibDBIcon-1.0") 
+local LDB = LibStub("LibDataBroker-1.1")
+local icon = LibStub("LibDBIcon-1.0")
 
 local CombatTextPlus = AceAddon:NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0")
 
@@ -20,7 +20,7 @@ local savedVariables = {
         labelFontSize = 14,
         enabled = true,
         scrollDuration = 0.5,
-		animationStyle = "fade", -- default
+        animationStyle = "fade", -- default
         animationEasing = "linear", -- default
         maxYOffset = 100,
         speedFactor = 2.0,
@@ -50,7 +50,15 @@ local savedVariables = {
             physical = 24, holy = 24, fire = 24, nature = 24,
             frost = 24, shadow = 24, arcane = 24, chaos = 24,
             dot = 24, heal = 24, crit = 24,
-        }
+        },
+        -- showLabels controls whether the damage type label is displayed next to numbers
+        showLabels = true,
+        -- optional animation tuning (defaults used in code if missing)
+        animationAmplitude = 30,     -- used for zigzag, sine, etc.
+        animationFrequency = 2,      -- used for sine/zigzag frequency
+        animationPulses = 3,         -- used for ripple
+        animationHorizontalDistance = 120, -- explicit horizontal distance for left/right styles
+        horizontalStagger = 14,      -- spacing (px) to stagger simultaneous left/right texts
     }
 }
 
@@ -60,19 +68,19 @@ frame.text:SetPoint("CENTER", frame, "CENTER")
 
 local db
 local inCombat = false
+
+-- activeCombatTexts keyed by unique id
 local activeCombatTexts = {}
-local damageTypeLastYPositions = {
-    physical = {}, holy = {}, fire = {}, nature = {},
-    frost = {}, shadow = {}, arcane = {}, chaos = {}, dot = {},
-    heal = {}, crit = {}
-}
+
+-- per nameplate key table storing lists by damageType of active ids
+-- structure: damageTypeStacks[plateKey] = { [damageType] = { id1, id2, ... }, ... }
+local damageTypeStacks = {}
 
 local damageAggregation = {}
 local aggregationDelay = .05
 
 local function DisableBlizzardCombatText()
     SetCVar("floatingCombatTextCombatDamage", 0)
-    CombatTextPlus:Print("Blizzard combat text for damage has been disabled.")
 end
 
 local CombatTextPlusLDB = LDB:NewDataObject("CombatTextPlus", {
@@ -109,7 +117,7 @@ function CombatTextPlus:ShowPreviewCombatText()
         heal = "Heal",
         crit = "Crit",
     }
-    
+
     local anchor = nil
     for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
         anchor = nameplate
@@ -118,17 +126,17 @@ function CombatTextPlus:ShowPreviewCombatText()
     if not anchor then
         anchor = CreateFrame("Frame", nil, UIParent)
         anchor:SetSize(1, 1)
-        anchor:SetPoint("CENTER", UIParent, "CENTER", -600, 0) 
+        anchor:SetPoint("CENTER", UIParent, "CENTER", -600, 0)
     end
 
     for i, damageType in ipairs(previewTypes) do
         C_Timer.After((i-1)*0.25, function()
             CombatTextPlus:DisplayCombatText(
-                anchor, 
-                previewValues[damageType], 
-                damageType, 
-                nil, 
-                previewLabels[damageType], 
+                anchor,
+                previewValues[damageType],
+                damageType,
+                nil,
+                previewLabels[damageType],
                 damageType=="crit"
             )
         end)
@@ -147,60 +155,134 @@ function CombatTextPlus:GetEasedProgress(progress)
     return progress
 end
 
-function CombatTextPlus:ApplyAnimationStyle(frame, nameplate, damageType, progress, index)
+-- ApplyAnimationStyle now takes stackIndex and stackCount to compute stagger properly.
+function CombatTextPlus:ApplyAnimationStyle(frame, nameplate, damageType, progress, stackIndex, stackCount)
     local function ClampAlpha(a)
         return math.max(0, math.min(1, a or 0))
     end
 
     local style = db.profile.animationStyle
     local eased = self:GetEasedProgress(progress)
+
+    -- base offsets (vertical float + base horizontal offset)
+    local baseX, baseY = self:GetMovementOffsets(nameplate, damageType, eased, stackIndex)
+
+    -- tuning values
+    local amplitude = db.profile.animationAmplitude or 30
+    local frequency = db.profile.animationFrequency or 2
+    local pulses = db.profile.animationPulses or 3
+    local maxY = db.profile.maxYOffset or 100
+    local speedFactor = db.profile.speedFactor or 1
+    local stagger = db.profile.horizontalStagger or 14
+    local horizDist = db.profile.animationHorizontalDistance or ((maxY) * speedFactor)
+
     if style == "fade" then
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY)
         frame:SetAlpha(ClampAlpha(1 - eased))
-	elseif style == "off" then
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+
+    elseif style == "off" then
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY)
         frame:SetAlpha(ClampAlpha(1 - eased))
-        frame:SetScale(1)	
+        frame:SetScale(1)
+
     elseif style == "bounce" then
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
         local bounce = math.abs(math.sin(eased * math.pi * 3) * (1 - eased) * 100)
-        yOffset = yOffset + bounce
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY + bounce)
         frame:SetAlpha(ClampAlpha(1 - eased))
+
     elseif style == "shake" then
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        xOffset = xOffset + math.sin(eased * 30) * 25
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        local shakeX = math.sin(eased * 30) * 25
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX + shakeX, baseY)
         frame:SetAlpha(ClampAlpha(1 - eased))
+
     elseif style == "spiral" then
         local angle = eased * 8 * math.pi
         local radius = 80 * eased
-        local xOffset = math.cos(angle) * radius
-        local yOffset = math.sin(angle) * radius + (db.profile.maxYOffset * eased * db.profile.speedFactor)
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        local sx = math.cos(angle) * radius
+        local sy = math.sin(angle) * radius + (maxY * eased * speedFactor)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", sx, sy)
         frame:SetAlpha(ClampAlpha(1 - eased))
+
     elseif style == "scale" then
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
         local scale = 1 + eased * 2
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY)
         frame:SetAlpha(ClampAlpha(1 - eased))
         frame:SetScale(scale)
+
     elseif style == "pop" then
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
         local popScale
         if eased < 0.2 then
             popScale = 1 + eased * 4
         else
             popScale = 1.8 - (eased - 0.2) * 2
         end
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY)
         frame:SetAlpha(ClampAlpha(1 - eased))
         frame:SetScale(popScale)
+
+    elseif style == "left" or style == "right" then
+        local direction = (style == "left") and 1 or -1 -- left => move right, right => move left
+        local startX = 0
+        local endX = direction * horizDist
+        local moveX = startX + (endX - startX) * eased
+
+        local scount = tonumber(stackCount) or 1
+        if scount < 1 then scount = 1 end
+        local sindex = tonumber(stackIndex) or 1
+        local centerOffset = ((scount - 1) * stagger) * 0.5
+        local staggerY = ((sindex - 1) * stagger) - centerOffset
+
+        local moveY = baseY + (maxY * eased * 0.6) + staggerY
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", moveX, moveY)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+
+    elseif style == "zigzag" then
+        local steps = math.max(1, math.floor(frequency * 2)) -- number of zigzags
+        local zig = math.sin(eased * math.pi * steps) * amplitude * (1 - eased)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX + zig, baseY)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+        frame:SetScale(1)
+
+    elseif style == "spiral_out" then
+        local revolutions = 2
+        local angle = eased * revolutions * 2 * math.pi
+        local radius = (80 + amplitude) * eased
+        local sx = math.cos(angle) * radius
+        local sy = math.sin(angle) * radius + (maxY * eased * speedFactor)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", sx, sy)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+
+    elseif style == "spiral_in" then
+        local revolutions = 2
+        local angle = (1 - eased) * revolutions * 2 * math.pi -- rotate as it comes in
+        local startRadius = (80 + amplitude)
+        local radius = startRadius * (1 - eased)
+        local sx = math.cos(angle) * radius
+        local sy = math.sin(angle) * radius + (maxY * eased * speedFactor * 0.5)
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", sx, sy)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+
+    elseif style == "ripple" then
+        local mag = 0.25 -- pulse magnitude
+        local pulse = math.sin(eased * math.pi * pulses) * mag * (1 - eased)
+        local scale = 1 + pulse
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY)
+        frame:SetScale(scale)
+        frame:SetAlpha(ClampAlpha(1 - eased))
+
+    elseif style == "flip" then
+        local flipAmt = 0.6 -- how much to scale during flip
+        local flipWave = math.sin(eased * math.pi) -- 0->1->0
+        local scale = 1 + flipWave * flipAmt
+        local tilt = math.cos(eased * math.pi * 2) * 12 * (1 - eased) -- less tilt over time
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX + tilt, baseY)
+        frame:SetScale(scale)
+        local alpha = ClampAlpha((1 - eased) * (0.85 + 0.15 * math.cos(eased * math.pi * 2)))
+        frame:SetAlpha(alpha)
+
     else
-        local xOffset, yOffset = self:GetMovementOffsets(nameplate, damageType, eased, index)
-        frame:SetPoint("CENTER", nameplate, "BOTTOM", xOffset, yOffset)
+        -- fallback: default float/fade behavior
+        frame:SetPoint("CENTER", nameplate, "BOTTOM", baseX, baseY)
         frame:SetAlpha(ClampAlpha(1 - eased))
     end
 end
@@ -210,7 +292,10 @@ function CombatTextPlus:OnInitialize()
     self.db = db
     self:SetupProfileOptions()
     db:SetProfile(UnitName("player") .. " - " .. GetRealmName())
-    icon:Register("CombatTextPlus", CombatTextPlusLDB, db.profile.minimap)
+
+    -- Register LDB icon once during initialize (safe)
+    pcall(function() icon:Register("CombatTextPlus", CombatTextPlusLDB, db.profile.minimap) end)
+
     local fontPath = LSM:Fetch("font", db.profile.font)
     frame.text:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
     frame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
@@ -219,21 +304,21 @@ function CombatTextPlus:OnInitialize()
     frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     frame:RegisterEvent("PLAYER_REGEN_DISABLED")
     frame:RegisterEvent("PLAYER_REGEN_ENABLED")
-    frame:SetScript("OnEvent", function(self, event, ...)
+    frame:SetScript("OnEvent", function(selfFrame, event, ...)
         if event == "COMBAT_LOG_EVENT_UNFILTERED" then
             CombatTextPlus:OnCombatLogEvent(CombatLogGetCurrentEventInfo())
         elseif event == "PLAYER_REGEN_DISABLED" then
             inCombat = true
         elseif event == "PLAYER_REGEN_ENABLED" then
             inCombat = false
-            for _, combatTextFrame in pairs(activeCombatTexts) do
-                combatTextFrame:Hide()
-                combatTextFrame:SetScript("OnUpdate", nil)
+            for k, combatTextFrame in pairs(activeCombatTexts) do
+                if combatTextFrame then
+                    combatTextFrame:Hide()
+                    combatTextFrame:SetScript("OnUpdate", nil)
+                end
             end
             activeCombatTexts = {}
-            for k in pairs(damageTypeLastYPositions) do
-                damageTypeLastYPositions[k] = {}
-            end
+            damageTypeStacks = {}
         end
     end)
 end
@@ -250,7 +335,7 @@ function CombatTextPlus:OnCombatLogEvent(...)
             local damageType = self:GetDamageType(school, subEvent)
             local keyCrit = isCritical and "crit" or damageType
             if db.profile.damageTypeFilters[keyCrit] then
-                local key = destGUID .. "-" .. spellId .. "-" .. keyCrit
+                local key = destGUID .. "-" .. tostring(spellId) .. "-" .. keyCrit
                 if not damageAggregation[key] then
                     damageAggregation[key] = { amount = 0, timer = nil }
                 end
@@ -345,13 +430,31 @@ function CombatTextPlus:ApplySettings()
     local fontPath = LSM:Fetch("font", db.profile.font or "Friz Quadrata TT")
     frame.text:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
     frame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
-    icon:Register("CombatTextPlus", CombatTextPlusLDB, db.profile.minimap)
+
+    -- Update minimap icon visibility (show/hide) if LibDBIcon is available.
+    if icon and type(icon.Show) == "function" and type(icon.Hide) == "function" then
+        if db.profile.minimap and db.profile.minimap.hide then
+            pcall(function() icon:Hide("CombatTextPlus") end)
+        else
+            pcall(function() icon:Show("CombatTextPlus") end)
+        end
+    end
+
     for _, combatTextFrame in pairs(activeCombatTexts) do
-        local damageType = combatTextFrame.damageType or "physical"
-        local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
-        combatTextFrame.text:SetFont(fontPath, fontSize, "OUTLINE")
-        combatTextFrame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
-        combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
+        if combatTextFrame and combatTextFrame.text then
+            local damageType = combatTextFrame.damageType or "physical"
+            local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
+            combatTextFrame.text:SetFont(fontPath, fontSize, "OUTLINE")
+            combatTextFrame.text:SetTextColor(db.profile.textColor.r, db.profile.textColor.g, db.profile.textColor.b, db.profile.textColor.a)
+            if combatTextFrame.label then
+                combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
+                if db.profile.showLabels then
+                    combatTextFrame.label:Show()
+                else
+                    combatTextFrame.label:Hide()
+                end
+            end
+        end
     end
     self:ToggleEnabled(db.profile.enabled)
     DisableBlizzardCombatText()
@@ -365,56 +468,114 @@ function CombatTextPlus:ToggleEnabled(value)
     end
 end
 
+-- Create (and display) a unique frame for each combat text event
 function CombatTextPlus:DisplayCombatText(nameplate, amount, damageType, spellId, spellName, isCritical)
     local formattedAmount = self:FormatNumber(amount)
     if not formattedAmount then return end
 
-    -- Frame management: one combat text per nameplate per damageType
-    local frameKey = tostring(nameplate) .. "-" .. damageType
-    local combatTextFrame = activeCombatTexts[frameKey]
-    if not combatTextFrame then
-        combatTextFrame = self:CreateCombatTextFrame(nameplate, damageType)
-        activeCombatTexts[frameKey] = combatTextFrame
+    local plateKey = tostring(nameplate)
+    damageTypeStacks[plateKey] = damageTypeStacks[plateKey] or {}
+    damageTypeStacks[plateKey][damageType] = damageTypeStacks[plateKey][damageType] or {}
+
+    -- create an id (timestamp + random) and add to stack list
+    local id = tostring(GetTime()) .. "-" .. tostring(math.random(1, 1000000))
+    table.insert(damageTypeStacks[plateKey][damageType], id)
+
+    -- create frame
+    local combatTextFrame = CreateFrame("Frame", nil, nameplate)
+    combatTextFrame.damageType = damageType
+    combatTextFrame._plateKey = plateKey
+    combatTextFrame._id = id
+    combatTextFrame:SetSize(200, 50)
+    combatTextFrame:SetPoint("CENTER", nameplate, "TOP", 0, 10)
+
+    local fontPath = LSM:Fetch("font", db.profile.font)
+    combatTextFrame.text = combatTextFrame:CreateFontString(nil, "OVERLAY")
+    combatTextFrame.text:SetFont(fontPath, db.profile.fontSize, "OUTLINE")
+    combatTextFrame.text:SetPoint("CENTER", combatTextFrame, "CENTER")
+
+    combatTextFrame.label = combatTextFrame:CreateFontString(nil, "OVERLAY")
+    combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
+    combatTextFrame.label:SetPoint("LEFT", combatTextFrame.text, "RIGHT", 5, 0)
+    if db and db.profile and db.profile.showLabels then
+        combatTextFrame.label:Show()
+    else
+        combatTextFrame.label:Hide()
     end
 
-    -- Font size
+    -- store in active table
+    activeCombatTexts[plateKey .. "-" .. id] = combatTextFrame
+
+    -- set text and colors
     local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
     combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), fontSize, "OUTLINE")
 
-    -- Color and label
     local label = self:GetDamageTypeLabel(damageType)
-    local labelColorR, labelColorG, labelColorB = self:GetLabelColor(damageType)
-    local damageColorR, damageColorG, damageColorB = self:GetDamageTypeColor(damageType)
+    local lR, lG, lB = self:GetLabelColor(damageType)
+    local dR, dG, dB = self:GetDamageTypeColor(damageType)
     if isCritical and damageType == "crit" then
         label = "Crit"
-        labelColorR, labelColorG, labelColorB = self:GetLabelColor("crit")
-        damageColorR, damageColorG, damageColorB = self:GetDamageTypeColor("crit")
+        lR, lG, lB = self:GetLabelColor("crit")
+        dR, dG, dB = self:GetDamageTypeColor("crit")
     end
 
     if combatTextFrame.label then
-        combatTextFrame.label:SetTextColor(labelColorR, labelColorG, labelColorB)
-        combatTextFrame.label:SetText(label)
+        if db.profile.showLabels then
+            combatTextFrame.label:SetTextColor(lR, lG, lB)
+            combatTextFrame.label:SetText(label)
+            combatTextFrame.label:Show()
+        else
+            combatTextFrame.label:Hide()
+        end
     end
-    combatTextFrame.text:SetTextColor(damageColorR, damageColorG, damageColorB)
+
+    combatTextFrame.text:SetTextColor(dR, dG, dB)
     combatTextFrame.text:SetText(formattedAmount)
     combatTextFrame:SetAlpha(1)
     combatTextFrame:Show()
 
-    -- Scrolling behavior
+    -- OnUpdate animation that respects speedFactor and dynamic stacking
     local startTime = GetTime()
-    local index = #damageTypeLastYPositions[damageType] + 1
-    table.insert(damageTypeLastYPositions[damageType], index)
-    combatTextFrame:SetScript("OnUpdate", function(self, elapsed)
+    combatTextFrame:SetScript("OnUpdate", function(selfFrame, elapsed)
         local now = GetTime()
-        local progress = (now - startTime) / (db.profile.scrollDuration / db.profile.speedFactor * 10)
+        local duration = math.max(0.001, (db and db.profile and db.profile.scrollDuration) or 0.5)
+        local speed = math.max(0.0001, (db and db.profile and db.profile.speedFactor) or 1)
+        local effectiveDuration = duration / speed
+        local progress = (now - startTime) / effectiveDuration
         if progress >= 1 then
-            self:Hide()
-            self:SetScript("OnUpdate", nil)
-            table.remove(damageTypeLastYPositions[damageType], index)
-            activeCombatTexts[frameKey] = nil
-            self:SetScale(1) -- reset scale if used
+            -- remove id from stack
+            local plate = selfFrame._plateKey
+            local dtype = selfFrame.damageType
+            local list = damageTypeStacks[plate] and damageTypeStacks[plate][dtype]
+            if list then
+                for i = 1, #list do
+                    if list[i] == selfFrame._id then
+                        table.remove(list, i)
+                        break
+                    end
+                end
+            end
+            -- cleanup
+            selfFrame:SetScript("OnUpdate", nil)
+            selfFrame:Hide()
+            activeCombatTexts[plate .. "-" .. selfFrame._id] = nil
+            -- allow GC by removing references
+            selfFrame.text = nil
+            selfFrame.label = nil
         else
-            CombatTextPlus:ApplyAnimationStyle(self, nameplate, damageType, progress, index)
+            -- compute dynamic stack index and count each frame
+            local plate = selfFrame._plateKey
+            local dtype = selfFrame.damageType
+            local list = damageTypeStacks[plate] and damageTypeStacks[plate][dtype] or {}
+            local stackIndex, stackCount = 1, #list
+            for i = 1, #list do
+                if list[i] == selfFrame._id then
+                    stackIndex = i
+                    break
+                end
+            end
+            -- call style with numeric stackIndex/stackCount
+            CombatTextPlus:ApplyAnimationStyle(selfFrame, nameplate, damageType, progress, stackIndex, stackCount)
         end
     end)
 end
@@ -467,7 +628,7 @@ end
 
 function CombatTextPlus:CreateCombatTextFrame(nameplate, damageType)
     local combatTextFrame = CreateFrame("Frame", nil, nameplate)
-	combatTextFrame.damageType = damageType 
+    combatTextFrame.damageType = damageType
     combatTextFrame:SetSize(200, 50)
     combatTextFrame:SetPoint("CENTER", nameplate, "TOP", 0, 10)
     local fontPath = LSM:Fetch("font", db.profile.font)
@@ -477,13 +638,18 @@ function CombatTextPlus:CreateCombatTextFrame(nameplate, damageType)
     combatTextFrame.label = combatTextFrame:CreateFontString(nil, "OVERLAY")
     combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
     combatTextFrame.label:SetPoint("LEFT", combatTextFrame.text, "RIGHT", 5, 0)
+    if db and db.profile and db.profile.showLabels then
+        combatTextFrame.label:Show()
+    else
+        combatTextFrame.label:Hide()
+    end
     return combatTextFrame
 end
 
 function CombatTextPlus:UpdateLabelFontSize()
     local fontPath = LSM:Fetch("font", db.profile.font)
     for _, combatTextFrame in pairs(activeCombatTexts) do
-        if combatTextFrame.label then
+        if combatTextFrame and combatTextFrame.label then
             combatTextFrame.label:SetFont(fontPath, db.profile.labelFontSize, "OUTLINE")
         end
     end
@@ -524,9 +690,7 @@ local options = {
             name = "Enabled",
             type = "toggle",
             desc = "Enable or disable the combat text",
-            get = function()
-                return db.profile.enabled
-            end,
+            get = function() return db.profile.enabled end,
             set = function(info, value)
                 db.profile.enabled = value
                 CombatTextPlus:ToggleEnabled(value)
@@ -558,7 +722,7 @@ local options = {
         speedFactor = {
             name = "Speed Factor",
             type = "range",
-            desc = "Set the speed of the text movement.",
+            desc = "Set the speed of the text movement. Higher values animate faster.",
             min = 0.5,
             max = 5.0,
             step = 0.1,
@@ -610,8 +774,10 @@ local options = {
                     db.profile.damageTypeFontSizes[k] = value
                 end
                 for _, combatTextFrame in pairs(activeCombatTexts) do
-                    local damageType = combatTextFrame.damageType or "physical"
-                    combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                    if combatTextFrame and combatTextFrame.text then
+                        local damageType = combatTextFrame.damageType or "physical"
+                        combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
+                    end
                 end
             end,
             order = 7,
@@ -630,6 +796,17 @@ local options = {
             end,
             order = 8,
         },
+        showLabels = {
+            name = "Show Labels",
+            type = "toggle",
+            desc = "Show or hide damage type labels (e.g., Fire, Frost, DOT).",
+            get = function() return db.profile.showLabels end,
+            set = function(info, value)
+                db.profile.showLabels = value
+                CombatTextPlus:ApplySettings()
+            end,
+            order = 9,
+        },
         font = {
             name = "Font",
             type = "select",
@@ -640,12 +817,14 @@ local options = {
             set = function(info, value)
                 db.profile.font = value
                 for _, combatTextFrame in pairs(activeCombatTexts) do
-                    local damageType = combatTextFrame.damageType or "physical"
-                    local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
-                    combatTextFrame.text:SetFont(LSM:Fetch("font", value), fontSize, "OUTLINE")
+                    if combatTextFrame and combatTextFrame.text then
+                        local damageType = combatTextFrame.damageType or "physical"
+                        local fontSize = db.profile.damageTypeFontSizes[damageType] or db.profile.fontSize
+                        combatTextFrame.text:SetFont(LSM:Fetch("font", value), fontSize, "OUTLINE")
+                    end
                 end
             end,
-            order = 9,
+            order = 10,
         },
         labelColors = {
             name = "Label Colors",
@@ -742,7 +921,7 @@ local options = {
                     order = 11,
                 },
             },
-            order = 10,
+            order = 11,
         },
         damageTypeFilters = {
             name = "Damage Type Filters",
@@ -762,7 +941,7 @@ local options = {
                 heal = { name = "Healing", type = "toggle", desc = "Enable or disable the display of Healing.", get = function() return db.profile.damageTypeFilters.heal end, set = function(info, value) db.profile.damageTypeFilters.heal = value end, order = 10 },
                 crit = { name = "Critical Hits", type = "toggle", desc = "Enable or disable the display of Critical hits.", get = function() return db.profile.damageTypeFilters.crit end, set = function(info, value) db.profile.damageTypeFilters.crit = value end, order = 11 },
             },
-            order = 11,
+            order = 12,
         },
         damageTypeColors = {
             name = "Damage Type Colors",
@@ -782,7 +961,7 @@ local options = {
                 healColor = { name = "Healing Color", type = "color", desc = "Set the color for Healing effects.", get = function() local color = db.profile.damageTypeColors.heal; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.heal; color.r, color.g, color.b = r, g, b end, order = 10 },
                 critColor = { name = "Crit Damage Color", type = "color", desc = "Set the color for Critical hit text.", get = function() local color = db.profile.damageTypeColors.crit; return color.r, color.g, color.b end, set = function(info, r, g, b) local color = db.profile.damageTypeColors.crit; color.r, color.g, color.b = r, g, b end, order = 11 },
             },
-            order = 12,
+            order = 13,
         },
         minimap = {
             name = "Show Minimap Button",
@@ -797,7 +976,7 @@ local options = {
                     icon:Show("CombatTextPlus")
                 end
             end,
-            order = 13,
+            order = 14,
         },
         damageTypeFontSizes = {
             name = "Damage Type Font Sizes",
@@ -816,7 +995,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.physical = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "physical" then
+                            if combatTextFrame and combatTextFrame.damageType == "physical" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -834,7 +1013,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.holy = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "holy" then
+                            if combatTextFrame and combatTextFrame.damageType == "holy" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -852,7 +1031,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.fire = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "fire" then
+                            if combatTextFrame and combatTextFrame.damageType == "fire" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -870,7 +1049,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.nature = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "nature" then
+                            if combatTextFrame and combatTextFrame.damageType == "nature" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -888,7 +1067,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.frost = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "frost" then
+                            if combatTextFrame and combatTextFrame.damageType == "frost" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -906,7 +1085,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.shadow = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "shadow" then
+                            if combatTextFrame and combatTextFrame.damageType == "shadow" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -924,7 +1103,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.arcane = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "arcane" then
+                            if combatTextFrame and combatTextFrame.damageType == "arcane" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -942,7 +1121,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.chaos = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "chaos" then
+                            if combatTextFrame and combatTextFrame.damageType == "chaos" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -960,7 +1139,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.dot = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "dot" then
+                            if combatTextFrame and combatTextFrame.damageType == "dot" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -978,7 +1157,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.heal = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "heal" then
+                            if combatTextFrame and combatTextFrame.damageType == "heal" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -996,7 +1175,7 @@ local options = {
                     set = function(info, value)
                         db.profile.damageTypeFontSizes.crit = value
                         for _, combatTextFrame in pairs(activeCombatTexts) do
-                            if combatTextFrame.damageType == "crit" then
+                            if combatTextFrame and combatTextFrame.damageType == "crit" and combatTextFrame.text then
                                 combatTextFrame.text:SetFont(LSM:Fetch("font", db.profile.font), value, "OUTLINE")
                             end
                         end
@@ -1004,24 +1183,31 @@ local options = {
                     order = 11,
                 },
             },
-            order = 14,
+            order = 15,
         },
         animationStyle = {
             name = "Animation Style",
             type = "select",
             desc = "Choose how the combat text animates.",
             values = {
-			    off = "Off (Normal)",
+                off = "Off (Normal)",
                 fade = "Fade",
                 bounce = "Bounce",
                 shake = "Shake",
                 spiral = "Spiral",
                 scale = "Scale",
                 pop = "Pop",
+                left = "Left → Right",
+                right = "Right → Left",
+                zigzag = "Zigzag",
+                spiral_out = "Spiral Out",
+                spiral_in = "Spiral In",
+                ripple = "Wave Fade (Ripple)",
+                flip = "Flip (3D-ish)",
             },
             get = function() return db.profile.animationStyle end,
             set = function(_, value) db.profile.animationStyle = value end,
-            order = 15,
+            order = 16,
         },
         animationEasing = {
             name = "Animation Easing",
@@ -1034,7 +1220,70 @@ local options = {
             },
             get = function() return db.profile.animationEasing end,
             set = function(_, value) db.profile.animationEasing = value end,
-            order = 16,
+            order = 17,
+        },
+        tuning = {
+            name = "Animation Tuning",
+            type = "group",
+            inline = true,
+            order = 18,
+            args = {
+                amplitude = {
+                    name = "Amplitude",
+                    type = "range",
+                    min = 0,
+                    max = 200,
+                    step = 1,
+                    desc = "Amplitude controls how far the text moves from side to side for oscillating animations (e.g., Zigzag). Higher = wider horizontal swings.",
+                    get = function() return db.profile.animationAmplitude end,
+                    set = function(_, v) db.profile.animationAmplitude = v end,
+                    order = 1,
+                },
+                frequency = {
+                    name = "Frequency",
+                    type = "range",
+                    min = 0.5,
+                    max = 8,
+                    step = 0.1,
+                    desc = "Frequency controls how many oscillations occur over the animation. For sine/zigzag, higher = more wiggles during the motion.",
+                    get = function() return db.profile.animationFrequency end,
+                    set = function(_, v) db.profile.animationFrequency = v end,
+                    order = 2,
+                },
+                pulses = {
+                    name = "Pulses (ripple)",
+                    type = "range",
+                    min = 1,
+                    max = 8,
+                    step = 1,
+                    desc = "Pulses controls the number of quick scale pulses for the Wave Fade (Ripple) animation. Increase for more rapid pulsing.",
+                    get = function() return db.profile.animationPulses end,
+                    set = function(_, v) db.profile.animationPulses = v end,
+                    order = 3,
+                },
+                horizontalDistance = {
+                    name = "Horizontal Distance",
+                    type = "range",
+                    min = 20,
+                    max = 400,
+                    step = 1,
+                    desc = "Horizontal Distance sets how far Left→Right and Right→Left animations travel away from the nameplate (in pixels). Use this to make horizontal motion subtle or pronounced.",
+                    get = function() return db.profile.animationHorizontalDistance end,
+                    set = function(_, v) db.profile.animationHorizontalDistance = v end,
+                    order = 4,
+                },
+                horizontalStagger = {
+                    name = "Horizontal Stagger",
+                    type = "range",
+                    min = 0,
+                    max = 60,
+                    step = 1,
+                    desc = "Horizontal Stagger controls the spacing (in pixels) between simultaneous left/right texts on the same nameplate. Higher values spread stacked texts farther apart so they don't overlap.",
+                    get = function() return db.profile.horizontalStagger end,
+                    set = function(_, v) db.profile.horizontalStagger = v end,
+                    order = 5,
+                },
+            },
         },
         preview = {
             name = "Preview Combat Text",
@@ -1043,7 +1292,7 @@ local options = {
             func = function()
                 CombatTextPlus:ShowPreviewCombatText()
             end,
-            order = 17,
+            order = 99,
         },
     },
 }
