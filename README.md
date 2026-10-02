@@ -1,69 +1,115 @@
-CombatTextPlus is a powerful World of Warcraft addon designed to enhance your combat experience by providing highly customizable combat text. This addon allows you to modify the appearance, movement, and behavior of combat text, ensuring that important damage and healing information is displayed in a way that suits your playstyle. Whether you prefer subtle indicators or flashy, dynamic text, CombatTextPlus gives you the control you need.
+<div align="center">
 
-Key Features
-Customizable Scroll Duration:
+# ⚔️ CombatTextPlus
 
-Scroll Duration: Adjust how quickly the combat text moves across the screen. This allows you to make the text scroll faster or slower, depending on your preference.
-Configuration: Can be adjusted in the settings under the "Scroll Duration" option.
-Adjustable Text Movement:
+**Fully customizable scrolling combat text for World of Warcraft.**
 
-Max Y Offset: Controls the maximum vertical distance that the text will move as it scrolls. This helps prevent text from moving too far off the screen.
-Speed Factor: Change the speed at which the text moves. This can make the combat text more dynamic or more static, depending on your preference.
-Damage Type Offsets: Customize the horizontal movement of text based on the type of damage (Physical, Holy, Fire, etc.). This allows you to have different behaviors for different types of damage, such as zig-zagging or spiraling text.
-Color Customization:
+Take control of how damage and healing appear on your screen. Subtle and clean, or flashy and dynamic, CombatTextPlus lets you build it your way.
 
-Damage Type Colors: Assign specific colors to different types of damage (e.g., Physical, Holy, Fire) to make them easily distinguishable during combat.
-Label Colors: Customize the colors of the labels that appear next to damage types, helping you quickly identify what type of damage is being displayed.
-Font and Size Adjustments:
+</div>
 
-Font Selection: Choose from a variety of fonts to style your combat text, allowing for a personalized and thematic look.
-Font Size: Adjust the size of the combat text to make it more prominent or subtle, depending on your needs.
-Damage Type Filters:
+***
 
-Enable/Disable Specific Damage Types: You can choose to display or hide certain types of damage. For example, if you only care about Fire damage, you can disable all other damage types from being displayed.
-Dynamic DOT (Damage Over Time) Behavior:
+## 📖 Table of Contents
 
-DOT Y Offset Multiplier: Control how much the DOT text moves vertically. This feature ensures that DOT damage stands out by giving it a unique movement pattern.
-Minimap Button:
+* [Features](#-features)
+* [Installation](#-installation)
+* [Configuration Guide](#%EF%B8%8F-configuration-guide)
+* [How It Works](#-how-it-works)
+* [Blizzard Combat Text](#-blizzard-combat-text)
 
-Toggle Minimap Button: You can choose to show or hide the minimap button for quick access to the addon’s settings.
-Profile Management:
+***
 
-Profiles: Save and switch between different configuration profiles, making it easy to switch settings for different characters or situations.
-Blizzard Combat Text Integration:
+## ✨ Features
 
-Automatic Disabling of Blizzard Scrolling Combat Text: CombatTextPlus will disable Blizzard’s default scrolling combat text to prevent overlapping. If you prefer to use Blizzard’s text, you can easily re-enable it by typing /console floatingCombatTextCombatDamage 1.
-How Things Work
-CombatTextPlus hooks into the WoW combat log to capture damage, healing, and other combat-related events. When a relevant event is detected (like taking damage or dealing damage), the addon displays the information on your screen using the settings you’ve configured.
+### 🎞️ Text Movement
+* **Scroll Duration** controls how long text stays on screen as it scrolls.
+* **Speed Factor** makes text movement more dynamic or more static.
+* **Max Y Offset** sets how far text travels vertically so it never drifts off screen.
+* **Damage Type Offsets** give each damage school its own horizontal motion, such as zigzag or spiral patterns.
 
-The movement of the combat text is determined by various parameters such as scrollDuration, speedFactor, and maxYOffset, which dictate how long and how far the text will scroll before fading out. You can also adjust how the text behaves for different types of damage through the damageTypeOffsets settings, which allow for different horizontal movements.
+### 🎨 Colors
+* **Damage Type Colors** assign a unique color to Physical, Holy, Fire, and every other school.
+* **Label Colors** style the labels shown next to each damage type.
 
-How to Change Things
-Adjusting Scroll Duration and Speed:
+### 🔤 Fonts
+* **Font Selection** lets you pick from a variety of fonts.
+* **Font Size** makes your numbers as bold or as subtle as you like.
 
-Go to the CombatTextPlus settings under Interface > Addons.
-Use the "Scroll Duration" slider to adjust how quickly the text scrolls.
-Adjust the "Speed Factor" to change the overall speed of the text movement.
-Customizing Text Movement:
+### 🔍 Damage Type Filters
+Show or hide any damage type. Only care about Fire? Turn everything else off.
 
-Use the "Max Y Offset" slider to control how high the text will move on the screen.
-Adjust the "Damage Type Offsets" for each damage type to customize the direction and behavior of the text movement (e.g., left, right, zigzag).
-Changing Colors:
+### 🔥 DOT Behavior
+* **DOT Y Offset Multiplier** gives Damage Over Time ticks their own vertical movement so they stand out from direct hits.
 
-In the settings, under "Damage Type Colors," you can pick specific colors for each damage type to help differentiate them during combat.
-Customize the "Label Colors" to change the appearance of the labels that accompany the damage numbers.
-Modifying Font and Size:
+### 💾 Profiles
+Save and swap between configurations for different characters, specs, or content.
 
-Select your preferred font from the "Font" dropdown menu.
-Adjust the size of the combat text using the "Font Size" slider.
-Managing Profiles:
+### 🧭 Minimap Button
+Quick access to settings, with the option to hide it.
 
-You can create, save, and switch between different profiles to quickly adapt your combat text settings for different characters or combat scenarios.
-Enabling/Disabling Specific Damage Types:
+***
 
-In the "Damage Type Filters" section, toggle which types of damage you want to see.
-Handling DOT Behavior:
+## 📦 Installation
 
-Adjust the "DOT Y Offset Multiplier" to change how much the DOT text moves vertically compared to other damage types.
-Conclusion
-CombatTextPlus is designed to give you complete control over how combat information is displayed in World of Warcraft. With its extensive customization options, you can tailor the combat text to fit your exact needs, whether you're a casual player or a hardcore raider. Explore the settings, experiment with different configurations, and make your combat experience truly your own!
+1. Download the latest release.
+2. Extract the `CombatTextPlus` folder into:
+   ```
+   World of Warcraft\_retail_\Interface\AddOns\
+   ```
+3. Restart WoW or type `/reload` in game.
+
+***
+
+## ⚙️ Configuration Guide
+
+Open the settings at **Interface > AddOns > CombatTextPlus** or click the minimap button.
+
+<table>
+<tr><th>What you want to change</th><th>Where to find it</th></tr>
+<tr><td>How fast text scrolls</td><td><b>Scroll Duration</b> and <b>Speed Factor</b> sliders</td></tr>
+<tr><td>How high text travels</td><td><b>Max Y Offset</b> slider</td></tr>
+<tr><td>Movement pattern per damage school</td><td><b>Damage Type Offsets</b></td></tr>
+<tr><td>Damage colors</td><td><b>Damage Type Colors</b></td></tr>
+<tr><td>Label colors</td><td><b>Label Colors</b></td></tr>
+<tr><td>Font style</td><td><b>Font</b> dropdown</td></tr>
+<tr><td>Text size</td><td><b>Font Size</b> slider</td></tr>
+<tr><td>Which damage types appear</td><td><b>Damage Type Filters</b></td></tr>
+<tr><td>DOT vertical movement</td><td><b>DOT Y Offset Multiplier</b></td></tr>
+<tr><td>Saved setups</td><td><b>Profiles</b></td></tr>
+</table>
+
+***
+
+## 🛠️ How It Works
+
+CombatTextPlus listens to the WoW combat log for damage, healing, and other combat events. When a relevant event fires, the addon draws it on screen using your settings.
+
+Movement is driven by a few core values:
+
+* `scrollDuration` sets how long the text lives before fading out.
+* `speedFactor` sets how fast it moves.
+* `maxYOffset` caps how far it travels vertically.
+* `damageTypeOffsets` controls horizontal motion for each damage school.
+
+***
+
+## 🔁 Blizzard Combat Text
+
+CombatTextPlus automatically turns off Blizzard's default scrolling combat text so the two don't overlap.
+
+Want Blizzard's text back? Type this in chat:
+
+```
+/console floatingCombatTextCombatDamage 1
+```
+
+***
+
+<div align="center">
+
+**Casual player or hardcore raider, make your combat text truly your own.**
+
+If you enjoy CombatTextPlus, consider leaving a ⭐ on the repo!
+
+</div>
