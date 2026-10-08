@@ -136,6 +136,7 @@ local savedVariables = {
         scrollDuration = 1.5,
         animationStyle = "fade",
         animationEasing = "linear",
+        startYOffset = 0,
         maxYOffset = 100,
         speedFactor = 1.0,
         damageTypeOffsets = {
@@ -794,8 +795,9 @@ end
 
 function CombatTextPlus:GetMovementOffsets(damageType, progress)
     local xOffset = (db.profile.damageTypeOffsets[damageType] or 0) * progress
+    local startYOffset = db.profile.startYOffset or 0
     local maxYOffset = db.profile.maxYOffset or 100
-    local yOffset = maxYOffset * progress * db.profile.speedFactor
+    local yOffset = startYOffset + maxYOffset * progress * db.profile.speedFactor
 
     return xOffset, yOffset
 end
@@ -1782,6 +1784,15 @@ local function BuildOptions()
                 set = function(_, value) db.profile.scrollDuration = value end,
                 order = 2,
             },
+            startYOffset = {
+                name = "Start Y Offset",
+                type = "range",
+                min = -200, max = 200, step = 5,
+                desc = "Initial vertical offset for combat text. This helps to position combat text above or below nameplates.",
+                get = function() return db.profile.startYOffset end,
+                set = function(_, value) db.profile.startYOffset = value end,
+                order = 3,
+            },
             maxYOffset = {
                 name = "Max Y Offset",
                 type = "range",
@@ -1789,7 +1800,7 @@ local function BuildOptions()
                 min = 50, max = 300, step = 10,
                 get = function() return db.profile.maxYOffset end,
                 set = function(_, value) db.profile.maxYOffset = value end,
-                order = 3,
+                order = 4,
             },
             speedFactor = {
                 name = "Speed Factor",
@@ -1798,7 +1809,7 @@ local function BuildOptions()
                 min = 0.25, max = 5.0, step = 0.05,
                 get = function() return db.profile.speedFactor end,
                 set = function(_, value) db.profile.speedFactor = value end,
-                order = 4,
+                order = 5,
             },
             damageTypeOffsets = {
                 name = "Damage Type Offsets",
@@ -1806,8 +1817,20 @@ local function BuildOptions()
                 inline = true,
                 desc = "Customize the horizontal movement of text based on damage type.",
                 args = offsetArgs,
-                order = 5,
+                order = 6,
             },
+feature/start-y-offset
+            dotYOffsetMultiplier = {
+                name = "DOT Y Offset Multiplier",
+                type = "range",
+                desc = "Adjust the vertical movement of DOT text.",
+                min = 0.1, max = 2.0, step = 0.1,
+                get = function() return db.profile.dotYOffsetMultiplier end,
+                set = function(_, value) db.profile.dotYOffsetMultiplier = value end,
+                order = 7,
+            },
+
+main
             fontSize = {
                 name = "Font Size",
                 type = "range",
@@ -1821,7 +1844,7 @@ local function BuildOptions()
                     end
                     CombatTextPlus:RefreshFonts()
                 end,
-                order = 7,
+                order = 8,
             },
             labelFontSize = {
                 name = "Label Font Size",
@@ -1833,7 +1856,7 @@ local function BuildOptions()
                     db.profile.labelFontSize = value
                     CombatTextPlus:RefreshFonts()
                 end,
-                order = 8,
+                order = 9,
             },
             showLabels = {
                 name = "Show Labels",
@@ -1844,7 +1867,7 @@ local function BuildOptions()
                     db.profile.showLabels = value
                     CombatTextPlus:ApplySettings()
                 end,
-                order = 9,
+                order = 10,
             },
             font = {
                 name = "Font",
@@ -1857,7 +1880,7 @@ local function BuildOptions()
                     db.profile.font = value
                     CombatTextPlus:RefreshFonts()
                 end,
-                order = 10,
+                order = 11,
             },
             colorPreset = {
                 name = "Use Default Colors",
@@ -1875,7 +1898,7 @@ local function BuildOptions()
                 inline = true,
                 desc = "Customize the color of the labels that appear next to each type of damage.",
                 args = labelColorArgs,
-                order = 11,
+                order = 12,
             },
             damageTypeFilters = {
                 name = "Damage Type Filters",
@@ -1883,7 +1906,7 @@ local function BuildOptions()
                 inline = true,
                 desc = "Select which types of damage you want to see displayed during combat.",
                 args = filterArgs,
-                order = 12,
+                order = 13,
             },
             damageTypeColors = {
                 name = "Damage Type Colors",
@@ -1891,7 +1914,7 @@ local function BuildOptions()
                 inline = true,
                 desc = "Customize the color of the combat text for each damage type.",
                 args = colorArgs,
-                order = 13,
+                order = 14,
             },
             minimap = {
                 name = "Show Minimap Button",
@@ -1906,7 +1929,7 @@ local function BuildOptions()
                         icon:Show("CombatTextPlus")
                     end
                 end,
-                order = 14,
+                order = 15,
             },
             damageTypeFontSizes = {
                 name = "Damage Type Font Sizes",
@@ -1914,7 +1937,7 @@ local function BuildOptions()
                 inline = true,
                 desc = "Customize the font size for each damage type.",
                 args = fontSizeArgs,
-                order = 15,
+                order = 16,
             },
             animationStyle = {
                 name = "Animation Style",
@@ -1923,7 +1946,7 @@ local function BuildOptions()
                 values = ANIMATION_STYLES,
                 get = function() return db.profile.animationStyle end,
                 set = function(_, value) db.profile.animationStyle = value end,
-                order = 16,
+                order = 17,
             },
             crits = {
                 name = "Crits",
@@ -2003,13 +2026,13 @@ local function BuildOptions()
                 },
                 get = function() return db.profile.animationEasing end,
                 set = function(_, value) db.profile.animationEasing = value end,
-                order = 17,
+                order = 18,
             },
             tuning = {
                 name = "Animation Tuning",
                 type = "group",
                 inline = true,
-                order = 18,
+                order = 19,
                 args = {
                     amplitude = {
                         name = "Amplitude",
