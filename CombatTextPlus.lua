@@ -60,6 +60,7 @@ local savedVariables = {
         scrollDuration = 0.5,
         animationStyle = "fade",
         animationEasing = "linear",
+        startYOffset = 0,
         maxYOffset = 100,
         speedFactor = 2.0,
         damageTypeOffsets = {
@@ -490,6 +491,9 @@ function CombatTextPlus:GetMovementOffsets(damageType, progress)
     if damageType == "dot" then
         yOffset = yOffset * (db.profile.dotYOffsetMultiplier or 1.0)
     end
+
+    local startYOffset = db.profile.startYOffset or 0
+    yOffset = yOffset + startYOffset
 
     return xOffset, yOffset
 end
@@ -1169,6 +1173,15 @@ local function BuildOptions()
                 get = function() return db.profile.scrollDuration end,
                 set = function(_, value) db.profile.scrollDuration = value end,
                 order = 2,
+            },
+            startYOffset = {
+                name = "Start Y Offset",
+                type = "range",
+                min = -200, max = 200, step = 5,
+                desc = "Initial vertical offset for combat text. This helps to position combat text above nameplates.",
+                get = function() return db.profile.startYOffset end,
+                set = function(_, value) db.profile.startYOffset = value end,
+                order = 2.5,
             },
             maxYOffset = {
                 name = "Max Y Offset",
