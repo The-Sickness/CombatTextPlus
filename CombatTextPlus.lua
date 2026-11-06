@@ -1,15 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v3.4 for 12.0 Midnight
---
--- Data source: UNIT_COMBAT on nameplates. Works everywhere, including boss
--- encounters and Mythic+. Numbers that Blizzard marks secret are passed
--- straight to FontString:SetText and never touched by Lua math.
--- The combat log is not used at all. In 12.0, registering
--- COMBAT_LOG_EVENT_UNFILTERED from an addon is a forbidden action.
---
--- There is no separate DoT type. UNIT_COMBAT gives a periodic tick the same
--- action, flag, and school as a direct hit, so DoTs show as their school
--- and DoT crits show as crits.
+-- v3.8 for 12.1.5 Midnight/Wow Forever
 
 local addonName = "CombatTextPlus"
 
@@ -65,6 +55,17 @@ local ANIMATION_STYLES = {
     arc = "Arc (Blizzard style)",
     rainbow_lr = "Rainbow Left → Right",
     rainbow_rl = "Rainbow Right → Left",
+}
+
+-- UNIT_COMBAT actions that mean the attack did no normal damage.
+local MISS_ACTIONS = {
+    "MISS", "DODGE", "PARRY", "BLOCK", "RESIST",
+    "IMMUNE", "EVADE", "DEFLECT", "REFLECT", "ABSORB",
+}
+local MISS_TEXT = {
+    MISS = "Miss", DODGE = "Dodge", PARRY = "Parry", BLOCK = "Block",
+    RESIST = "Resist", IMMUNE = "Immune", EVADE = "Evade",
+    DEFLECT = "Deflect", REFLECT = "Reflect", ABSORB = "Absorb",
 }
 
 local SCHOOL_TO_TYPE = {
@@ -136,7 +137,7 @@ local savedVariables = {
         scrollDuration = 1.5,
         animationStyle = "fade",
         animationEasing = "linear",
-        startYOffset = 0,
+        startYOffset = 0,           -- where numbers start, above (+) or below (-) the nameplate. Contributed by Borod4r.
         maxYOffset = 100,
         speedFactor = 1.0,
         damageTypeOffsets = {
@@ -156,6 +157,10 @@ local savedVariables = {
             heal = 24, crit = 24,
         },
         showLabels = true,
+        showSpellIcons = false,     -- icon of the spell that made each hit
+        spellIconPosition = "left", -- "left" or "right" of the number
+        spellIconSize = 1.0,        -- icon size as a multiple of the number's font size
+        spellIconGuess = false,     -- when a hit cannot be confirmed, use your last cast if it clearly fits
         animationAmplitude = 30,
         animationFrequency = 2,
         animationPulses = 3,
@@ -179,11 +184,33 @@ local savedVariables = {
         centerY = 150,
         centerMaxNumbers = 6,       -- most numbers the center display shows at once
 
+        -- Overlap and volume
+        preventOverlap = true,      -- push older numbers up so new ones never land on top of them
+        lineSpacing = 1.1,          -- space between pushed numbers, as a multiple of the font size
+        maxPerPlate = 8,            -- most numbers on one nameplate at once (0 = no limit)
+
         -- Crits
         critColorMode = "crit",     -- "crit" (Crit color and size) or "school" (damage type color, bigger)
         critSizeMultiplier = 2.0,   -- school mode: crit font size = damage type font size x this
         critAnimation = "same",     -- "same" as normal hits, or any animation style
         critLabel = false,          -- school mode: label reads "Fire Crit" instead of "Fire"
+
+        -- Misses on enemies (Miss, Dodge, Parry, Immune...)
+        showMisses = false,
+        missTypes = {
+            MISS = true, DODGE = true, PARRY = true, BLOCK = true, RESIST = true,
+            IMMUNE = true, EVADE = true, DEFLECT = true, REFLECT = true, ABSORB = true,
+        },
+        missColor = {r = 0.75, g = 0.75, b = 0.75},
+        missFontSize = 20,
+
+        -- Your own avoidance (attacks on you that missed)
+        showMyAvoidance = false,
+        avoidanceColor = {r = 0.40, g = 0.75, b = 1.00},
+        avoidanceFontSize = 22,
+        avoidanceX = -150,
+        avoidanceY = 40,
+        avoidanceMaxNumbers = 4,
     }
 }
 
@@ -235,10 +262,12 @@ local debugMode = false     -- false, "target" (current target only), or "all"
 local activeTexts = {}      -- [frame] = true
 local stacks = {}           -- stacks[anchor][damageType] = { frame, frame, ... }
 local framePool = {}
+local pendingIcons = {}     -- text frames still waiting for the damage meter to confirm their spell
 local arcSide = 1           -- flips each hit so Arc numbers alternate left and right
 
 local ghostPool = {}        -- spare anchors for numbers whose nameplate went away
 local centerAnchor          -- fixed anchor for the center screen display
+local avoidAnchor           -- fixed anchor for your own avoidance text
 local targetEngagedAt = 0   -- GetTime() of your last attack on your current target
 
 local plateByUnit = {}      -- "nameplate3" -> plate frame
@@ -370,10 +399,14 @@ local function ReleaseTextFrame(f)
     f:SetAlpha(1)
     f.text:SetText("")
     f.label:SetText("")
+    if f.icon then f.icon:Hide() end
+    f.spellIconID = nil
+    pendingIcons[f] = nil
     f.anchor = nil
     f.damageType = nil
     f.startTime = nil
     f.isCrit = nil
+    f.bumpY, f.bumpTarget, f.curY, f.lineH = 0, 0, nil, nil
     framePool[#framePool + 1] = f
     ReleaseGhostRef(oldAnchor)
 end
@@ -387,6 +420,9 @@ local function AcquireTextFrame(anchor)
         f.text:SetPoint("CENTER", f, "CENTER")
         f.label = f:CreateFontString(nil, "OVERLAY")
         f.label:SetPoint("LEFT", f.text, "RIGHT", 5, 0)
+        f.icon = f:CreateTexture(nil, "OVERLAY")
+        f.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92) -- trim the icon's built in border
+        f.icon:Hide()
     end
     f.released = false
     f:SetParent(anchor)
@@ -501,10 +537,8 @@ end
 
 -- Keeps the center display readable. When it is full, the oldest number
 -- goes first, but a crit is only bumped when everything showing is a crit.
-local function MakeRoomInCenter()
-    local anchor = centerAnchor
+local function MakeRoomOn(anchor, maxNumbers)
     if not anchor then return end
-    local maxNumbers = db.profile.centerMaxNumbers or 6
     while true do
         local count, oldest, oldestCrit = 0, nil, nil
         for f in pairs(activeTexts) do
@@ -521,6 +555,25 @@ local function MakeRoomInCenter()
         if count < maxNumbers then return end
         ReleaseTextFrame(oldest or oldestCrit)
     end
+end
+
+------------------------------------------------------------
+-- Your own avoidance display
+-- Fixed spot near your character. Attacks on you are aimed at you, so
+-- unlike enemy numbers there is no question of whose event it is.
+------------------------------------------------------------
+local function GetAvoidAnchor()
+    if not avoidAnchor then
+        avoidAnchor = CreateFrame("Frame", "CombatTextPlusAvoidAnchor", UIParent)
+        avoidAnchor:SetSize(1, 1)
+    end
+    return avoidAnchor
+end
+
+local function PositionAvoidAnchor()
+    local a = GetAvoidAnchor()
+    a:ClearAllPoints()
+    a:SetPoint("CENTER", UIParent, "CENTER", db.profile.avoidanceX or -150, db.profile.avoidanceY or 40)
 end
 
 ------------------------------------------------------------
@@ -769,14 +822,25 @@ function CombatTextPlus:ShowPreviewCombatText()
                 damageType = "fire"
             end
             local value = previewValues[previewType]
+            if previewType == "frost" and db.profile.showMisses then
+                damageType, value = "miss", "Dodge"
+            end
             if mode ~= "center" then
-                CombatTextPlus:DisplayCombatText(anchor, value, damageType, isCrit)
+                CombatTextPlus:DisplayCombatText(anchor, value, damageType, isCrit, "preview")
             end
             if mode ~= "nameplates" then
                 PositionCenterAnchor()
-                CombatTextPlus:DisplayCombatText(GetCenterAnchor(), value, damageType, isCrit)
+                CombatTextPlus:DisplayCombatText(GetCenterAnchor(), value, damageType, isCrit, "preview")
             end
         end)
+    end
+    if db.profile.showMyAvoidance then
+        for i, text in ipairs({"Parry", "Dodge"}) do
+            C_Timer.After(i * 0.5, function()
+                PositionAvoidAnchor()
+                CombatTextPlus:DisplayCombatText(GetAvoidAnchor(), text, "avoid")
+            end)
+        end
     end
 end
 
@@ -795,11 +859,28 @@ end
 
 function CombatTextPlus:GetMovementOffsets(damageType, progress)
     local xOffset = (db.profile.damageTypeOffsets[damageType] or 0) * progress
-    local startYOffset = db.profile.startYOffset or 0
     local maxYOffset = db.profile.maxYOffset or 100
-    local yOffset = startYOffset + maxYOffset * progress * db.profile.speedFactor
+    local yOffset = maxYOffset * progress * db.profile.speedFactor
 
     return xOffset, yOffset
+end
+
+-- Every animation style positions its text through this. It adds the
+-- overlap push and remembers where the text sits, using only our own
+-- numbers. Frame positions are never read back from the game, since
+-- anything attached to a nameplate can come back hidden in Midnight.
+local function SetTextPos(f, anchor, x, y)
+    local bump = f.bumpY or 0
+    -- Start Y Offset (contributed by Borod4r) is applied here so every
+    -- animation style starts from the same raised or lowered spot.
+    -- Fixed displays (center screen, avoidance) are already placed by their
+    -- own position sliders, so it only applies to nameplates.
+    local start = 0
+    if anchor ~= centerAnchor and anchor ~= avoidAnchor then
+        start = db.profile.startYOffset or 0
+    end
+    f:SetPoint("CENTER", anchor, "BOTTOM", x, y + bump + start)
+    f.curY = y + bump
 end
 
 function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, stackIndex, stackCount)
@@ -826,29 +907,29 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
     local horizDist = db.profile.animationHorizontalDistance or (maxY * speedFactor)
 
     if style == "fade" then
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "off" then
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
         f:SetScale(1)
 
     elseif style == "bounce" then
         local bounce = math.abs(math.sin(eased * math.pi * 3) * (1 - eased) * 100)
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY + bounce)
+        SetTextPos(f, anchor, baseX, baseY + bounce)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "pulse" then
         -- Rises while throbbing in size a few times, fading out at the end.
         local throb = math.abs(math.sin(eased * math.pi * 3)) * 0.35 * (1 - eased)
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetScale(1 + throb)
         f:SetAlpha(ClampAlpha(eased < 0.6 and 1 or (1 - (eased - 0.6) / 0.4)))
 
     elseif style == "shake" then
         local shakeX = math.sin(eased * 30) * 25
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX + shakeX, baseY)
+        SetTextPos(f, anchor, baseX + shakeX, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "spiral" then
@@ -856,11 +937,11 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         local radius = 80 * eased
         local sx = math.cos(angle) * radius
         local sy = math.sin(angle) * radius + (maxY * eased * speedFactor)
-        f:SetPoint("CENTER", anchor, "BOTTOM", sx, sy)
+        SetTextPos(f, anchor, sx, sy)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "scale" then
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
         f:SetScale(1 + eased * 2)
 
@@ -871,7 +952,7 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         else
             popScale = 1.8 - (eased - 0.2) * 2
         end
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
         f:SetScale(popScale)
 
@@ -886,13 +967,13 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         local staggerY = ((sindex - 1) * stagger) - centerOffset
 
         local moveY = baseY + (maxY * eased * 0.6) + staggerY
-        f:SetPoint("CENTER", anchor, "BOTTOM", moveX, moveY)
+        SetTextPos(f, anchor, moveX, moveY)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "zigzag" then
         local steps = math.max(1, math.floor(frequency * 2))
         local zig = math.sin(eased * math.pi * steps) * amplitude * (1 - eased)
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX + zig, baseY)
+        SetTextPos(f, anchor, baseX + zig, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
         f:SetScale(1)
 
@@ -901,7 +982,7 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         local radius = (80 + amplitude) * eased
         local sx = math.cos(angle) * radius
         local sy = math.sin(angle) * radius + (maxY * eased * speedFactor)
-        f:SetPoint("CENTER", anchor, "BOTTOM", sx, sy)
+        SetTextPos(f, anchor, sx, sy)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "spiral_in" then
@@ -909,12 +990,12 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         local radius = (80 + amplitude) * (1 - eased)
         local sx = math.cos(angle) * radius
         local sy = math.sin(angle) * radius + (maxY * eased * speedFactor * 0.5)
-        f:SetPoint("CENTER", anchor, "BOTTOM", sx, sy)
+        SetTextPos(f, anchor, sx, sy)
         f:SetAlpha(ClampAlpha(1 - eased))
 
     elseif style == "ripple" then
         local pulse = math.sin(eased * math.pi * pulses) * 0.25 * (1 - eased)
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetScale(1 + pulse)
         f:SetAlpha(ClampAlpha(1 - eased))
 
@@ -925,7 +1006,7 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         local dir = f.arcDir or 1
         local moveX = dir * horizDist * 0.6 * eased
         local moveY = maxY * (2.5 * eased - 3 * eased * eased)
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX + moveX, moveY)
+        SetTextPos(f, anchor, baseX + moveX, moveY)
 
         local s = 1
         if f.isCrit then
@@ -953,19 +1034,19 @@ function CombatTextPlus:ApplyAnimationStyle(f, anchor, damageType, progress, sta
         local staggerY = ((sindex - 1) * stagger) - centerOffset
 
         local moveY = maxY * math.sin(math.pi * eased) + staggerY
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX + moveX, moveY)
+        SetTextPos(f, anchor, baseX + moveX, moveY)
         f:SetScale(1)
         f:SetAlpha(ClampAlpha(eased < 0.7 and 1 or (1 - (eased - 0.7) / 0.3)))
 
     elseif style == "flip" then
         local flipWave = math.sin(eased * math.pi)
         local tilt = math.cos(eased * math.pi * 2) * 12 * (1 - eased)
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX + tilt, baseY)
+        SetTextPos(f, anchor, baseX + tilt, baseY)
         f:SetScale(1 + flipWave * 0.6)
         f:SetAlpha(ClampAlpha((1 - eased) * (0.85 + 0.15 * math.cos(eased * math.pi * 2))))
 
     else
-        f:SetPoint("CENTER", anchor, "BOTTOM", baseX, baseY)
+        SetTextPos(f, anchor, baseX, baseY)
         f:SetAlpha(ClampAlpha(1 - eased))
     end
 end
@@ -974,6 +1055,11 @@ end
 -- type's size times the Crit Size multiplier.
 function CombatTextPlus:GetFontSizeFor(damageType, isCrit)
     local profile = db.profile
+    if damageType == "miss" then
+        return profile.missFontSize or 20
+    elseif damageType == "avoid" then
+        return profile.avoidanceFontSize or 22
+    end
     local size = profile.damageTypeFontSizes[damageType] or profile.fontSize
     if isCrit and damageType ~= "crit" then
         size = size * (profile.critSizeMultiplier or 2)
@@ -982,11 +1068,577 @@ function CombatTextPlus:GetFontSizeFor(damageType, isCrit)
 end
 
 ------------------------------------------------------------
+-- Overlap prevention
+-- Each style positions the frame; afterwards its vertical push (bump) is
+-- added on top. When a new number appears, numbers on the same anchor that
+-- sit too close above its starting spot are pushed up one line, like a
+-- scroll area. Only frame positions are used, never the numbers, so this
+-- is safe with secret values.
+------------------------------------------------------------
+function CombatTextPlus:PlaceFrame(f, progress, stackIndex, stackCount, elapsed)
+    local target = f.bumpTarget or 0
+    local bump = f.bumpY or 0
+    if bump ~= target then
+        -- Glide to the new spot instead of jumping.
+        local step = math.min(1, (elapsed or 1) * 18)
+        bump = bump + (target - bump) * step
+        if math.abs(target - bump) < 0.5 then bump = target end
+        f.bumpY = bump
+    end
+    self:ApplyAnimationStyle(f, f.anchor, f.damageType, progress, stackIndex, stackCount)
+end
+
+function CombatTextPlus:MakeRoomAbove(newFrame)
+    if not db.profile.preventOverlap then return end
+    local anchor = newFrame.anchor
+    local startY = newFrame.curY or 0
+    local newH = newFrame.lineH or 24
+
+    -- Everything else on this anchor at or above the new number's start,
+    -- lowest first.
+    local others = {}
+    for f in pairs(activeTexts) do
+        if f ~= newFrame and f.anchor == anchor and f.curY then
+            local finalY = f.curY - (f.bumpY or 0) + (f.bumpTarget or 0)
+            if finalY >= startY - newH * 0.5 then
+                others[#others + 1] = f
+            end
+        end
+    end
+    if #others == 0 then return end
+    table.sort(others, function(a, b)
+        return (a.curY - (a.bumpY or 0) + (a.bumpTarget or 0)) < (b.curY - (b.bumpY or 0) + (b.bumpTarget or 0))
+    end)
+
+    local floorY, floorH = startY, newH
+    for _, f in ipairs(others) do
+        local h = f.lineH or 24
+        local need = (floorH + h) * 0.5
+        local finalY = f.curY - (f.bumpY or 0) + (f.bumpTarget or 0)
+        if finalY < floorY + need then
+            local push = (floorY + need) - finalY
+            f.bumpTarget = (f.bumpTarget or 0) + push
+            finalY = finalY + push
+        end
+        floorY, floorH = finalY, h
+    end
+end
+
+------------------------------------------------------------
 -- Display
 -- amount may be a secret value. If it is, it goes straight into SetText
 -- with no formatting, math, or comparison.
 ------------------------------------------------------------
-function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit)
+------------------------------------------------------------
+-- Spell icons
+--
+-- Damage events in Midnight do not say which spell hit, so the icon is
+-- confirmed another way: Blizzard's built in damage meter (C_DamageMeter)
+-- keeps your damage totals per spell, with real spell IDs, for you and your
+-- pet. When a number appears, the addon looks for the spell whose total
+-- just went up by that same amount. A match is the real spell. If the meter
+-- updates a moment later, the icon is added a split second after the
+-- number. A hit that cannot be matched (another player's hit, or an amount
+-- Blizzard hides) gets no icon, unless Best Guess is turned on.
+--
+-- Retail only. Built from Blizzard's API; no code copied from other addons.
+------------------------------------------------------------
+local meterTotals = {}      -- ["guid:spellID"] = last total seen
+local meterPrimed = false   -- first poll only records a starting point
+local unclaimed = {}        -- [spellID] = { amount = damage not yet matched to a hit, at = time }
+local lastPollAt = 0
+local iconCache = {}
+local iconTestMode = false
+local iconDriver
+local lastCast = { id = nil, at = 0, targetGUID = nil }
+local meterEvents = {}      -- recent { id = spellID, at = time } each time a spell's total went up
+
+local METER_MAX_AGE = 1.0   -- meter damage older than this can no longer claim a hit
+local PENDING_MAX_WAIT = 0.5
+
+local function CanUseMeter()
+    return WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+        and C_DamageMeter and C_DamageMeter.GetCombatSessionSourceFromType
+        and Enum and Enum.DamageMeterType and Enum.DamageMeterType.DamageDone
+        and true or false
+end
+
+local function SpellIconFor(spellID)
+    if iconCache[spellID] ~= nil then return iconCache[spellID] or nil end
+    local icon
+    if C_Spell and C_Spell.GetSpellTexture then
+        local ok, tex = pcall(C_Spell.GetSpellTexture, spellID)
+        if ok and tex and not IsSecret(tex) then icon = tex end
+    end
+    if not icon and C_Spell and C_Spell.GetSpellInfo then
+        local ok, info = pcall(C_Spell.GetSpellInfo, spellID)
+        if ok and info and not IsSecret(info) and info.iconID and not IsSecret(info.iconID) then
+            icon = info.iconID
+        end
+    end
+    iconCache[spellID] = icon or false
+    return icon
+end
+
+local function SpellNameFor(spellID)
+    if C_Spell and C_Spell.GetSpellName then
+        local ok, name = pcall(C_Spell.GetSpellName, spellID)
+        if ok and name and not IsSecret(name) then return name end
+    end
+    return tostring(spellID)
+end
+
+local function ReadMeterSource(guid, now)
+    local ok, src = pcall(C_DamageMeter.GetCombatSessionSourceFromType, 0, Enum.DamageMeterType.DamageDone, guid)
+    if not ok or src == nil or IsSecret(src) then return end
+    local spells = src.combatSpells
+    if type(spells) ~= "table" or IsSecret(spells) then return end
+    pcall(function()
+        for _, sp in ipairs(spells) do
+            local id, total = sp.spellID, sp.totalAmount
+            if type(id) == "number" and not IsSecret(id) and total ~= nil and not IsSecret(total) then
+                total = tonumber(total)
+                if total and total > 0 then
+                    local key = guid .. ":" .. id
+                    local last = meterTotals[key]
+                    local delta
+                    if last == nil then
+                        delta = meterPrimed and total or 0
+                    else
+                        delta = total - last
+                        if delta < 0 then delta = total end -- the meter started a new session
+                    end
+                    meterTotals[key] = total
+                    if delta > 0 then
+                        meterEvents[#meterEvents + 1] = { id = id, at = now }
+                        local u = unclaimed[id]
+                        if not u or (now - u.at) > METER_MAX_AGE then
+                            u = { amount = 0, at = now }
+                            unclaimed[id] = u
+                        end
+                        u.amount = u.amount + delta
+                        u.at = now
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function PollMeter(force)
+    if not CanUseMeter() then return end
+    local now = GetTime()
+    if not force and (now - lastPollAt) < 0.03 then return end
+    lastPollAt = now
+    local seen = {}
+    for _, unit in ipairs({ "player", "pet" }) do
+        local guid = UnitGUID(unit)
+        if type(guid) == "string" and not IsSecret(guid) and not seen[guid] then
+            seen[guid] = true
+            ReadMeterSource(guid, now)
+        end
+    end
+    meterPrimed = true
+    -- Keep only the last two seconds of meter activity.
+    local keep = 1
+    for i = 1, #meterEvents do
+        if (now - meterEvents[i].at) <= 2 then
+            meterEvents[keep] = meterEvents[i]
+            keep = keep + 1
+        end
+    end
+    for i = #meterEvents, keep, -1 do meterEvents[i] = nil end
+end
+
+-- Hidden amounts cannot be matched by value, so match by timing instead:
+-- which of your spells' meter totals went up at the moment this hit
+-- landed. Returns spellID, or nil plus a reason.
+local TIMING_BEFORE = 0.20  -- meter activity this long before the hit still counts
+local TIMING_SETTLE = 0.12  -- wait this long after the hit for the meter to catch up
+local TIMING_GAP = 0.06     -- the closest spell must beat the next one by this much
+
+local function MatchByTiming(hitAt, now)
+    local best, bestDist, second, secondDist
+    local seenSpell = {}
+    for i = 1, #meterEvents do
+        local e = meterEvents[i]
+        if e.at >= hitAt - TIMING_BEFORE and e.at <= now then
+            local dist = math.abs(e.at - hitAt)
+            local prev = seenSpell[e.id]
+            if not prev or dist < prev then seenSpell[e.id] = dist end
+        end
+    end
+    for id, dist in pairs(seenSpell) do
+        if not bestDist or dist < bestDist then
+            second, secondDist = best, bestDist
+            best, bestDist = id, dist
+        elseif not secondDist or dist < secondDist then
+            second, secondDist = id, dist
+        end
+    end
+    if not best then return nil, "no meter activity: likely not your hit" end
+    if second and (secondDist - bestDist) < TIMING_GAP then
+        return nil, ("too close to call: %s or %s"):format(tostring(best), tostring(second))
+    end
+    return best
+end
+
+-- Finds the spell whose fresh meter damage matches this hit, and marks that
+-- damage as used so the next hit cannot claim it twice.
+local function ClaimFromMeter(amount)
+    if amount == nil or IsSecret(amount) or type(amount) ~= "number" or amount <= 0 then return nil end
+    local now = GetTime()
+    local tol = math.max(1, amount * 0.005)
+
+    -- 1. One hit, one spell: the meter went up by exactly this amount.
+    local match
+    for id, u in pairs(unclaimed) do
+        if (now - u.at) <= METER_MAX_AGE and math.abs(u.amount - amount) <= tol then
+            match = id
+            break
+        end
+    end
+
+    -- 2. Several hits from one spell landed together (AoE, multi hit).
+    -- Only trusted when exactly one spell has enough fresh damage to cover it.
+    if not match then
+        local count
+        count, match = 0, nil
+        for id, u in pairs(unclaimed) do
+            if (now - u.at) <= 0.5 and u.amount + tol >= amount then
+                count = count + 1
+                match = id
+            end
+        end
+        if count ~= 1 then match = nil end
+    end
+
+    if match then
+        local u = unclaimed[match]
+        u.amount = u.amount - amount
+        if u.amount <= tol then unclaimed[match] = nil end
+    end
+    return match
+end
+
+-- Best Guess (optional): the hit landed right after your cast, on the
+-- enemy you cast at.
+local function GuessFromLastCast(unit)
+    -- While you channel (Rapid Fire, Drain Soul), every tick belongs to the
+    -- channel, however long after it started.
+    if UnitChannelInfo then
+        local ok, name, _, _, _, _, _, _, channelID = pcall(UnitChannelInfo, "player")
+        if ok and name and channelID and not IsSecret(channelID) and type(channelID) == "number" then
+            if unit and lastCast.targetGUID then
+                local g = UnitGUID(unit)
+                if g ~= nil and not IsSecret(g) and g == lastCast.targetGUID then
+                    return channelID
+                end
+            else
+                return channelID
+            end
+        end
+    end
+    if not lastCast.id then return nil end
+    if (GetTime() - lastCast.at) > 0.6 then return nil end
+    if unit and lastCast.targetGUID then
+        local g = UnitGUID(unit)
+        if g == nil or IsSecret(g) or g ~= lastCast.targetGUID then return nil end
+    end
+    return lastCast.id
+end
+
+-- True when the spell is one you actually know (or replaces one you know).
+-- Hidden helper spells that Blizzard triggers behind the scenes are not
+-- known spells, so this keeps them from replacing your real cast.
+local function IsKnownPlayerSpell(spellID)
+    if IsPlayerSpell then
+        local ok, known = pcall(IsPlayerSpell, spellID)
+        if ok and known == true then return true end
+    end
+    if FindBaseSpellByID and IsPlayerSpell then
+        local ok, base = pcall(FindBaseSpellByID, spellID)
+        if ok and base and not IsSecret(base) and base ~= spellID then
+            local ok2, known = pcall(IsPlayerSpell, base)
+            if ok2 and known == true then return true end
+        end
+    end
+    if not IsPlayerSpell then return true end -- older clients: cannot check, allow
+    return false
+end
+
+local function IsAutoRepeat(spellID)
+    if spellID == AUTO_SHOT_ID or spellID == AUTO_ATTACK_ID then return true end
+    if C_Spell and C_Spell.IsAutoRepeatSpell then
+        local ok, auto = pcall(C_Spell.IsAutoRepeatSpell, spellID)
+        if ok and auto == true then return true end
+    end
+    return false
+end
+
+local function RecordCast(spellID)
+    if spellID == nil or IsSecret(spellID) or type(spellID) ~= "number" then return end
+    local why
+    -- Auto Shot, Auto Attack, and anything that replaces them (like Bleak
+    -- Arrows) fire a cast event on every shot. Recording them would keep
+    -- replacing your real ability.
+    if IsAutoRepeat(spellID) then
+        why = "auto shot or auto attack"
+    elseif not IsKnownPlayerSpell(spellID) then
+        why = "hidden helper spell, not in your spellbook"
+    else
+        local check = C_Spell and C_Spell.IsSpellHarmful
+        if check then
+            local ok, harmful = pcall(check, spellID)
+            if ok and harmful ~= nil and not IsSecret(harmful) and not harmful then
+                why = "not an attack"
+            end
+        end
+    end
+    if iconTestMode then
+        CombatTextPlus:Print(("icontest | cast: %s (%d) %s"):format(SpellNameFor(spellID), spellID,
+            why and ("|cffff5555ignored: " .. why .. "|r") or "|cff55ff55recorded|r"))
+    end
+    if why then return end
+    local g = UnitGUID("target")
+    lastCast.id, lastCast.at = spellID, GetTime()
+    lastCast.targetGUID = (g ~= nil and not IsSecret(g)) and g or nil
+end
+
+-- Positions the number, label, and icon. A hidden (secret) number's width
+-- cannot be used, so for those the number and icon meet at the frame's
+-- center instead of being placed against the number's edges.
+local function LayoutTextPieces(f)
+    local iconShown = f.icon:IsShown()
+    local iconPos = db.profile.spellIconPosition or "left"
+    f.text:ClearAllPoints()
+    f.label:ClearAllPoints()
+    f.icon:ClearAllPoints()
+
+    if not f.amountSecret then
+        f.text:SetPoint("CENTER", f, "CENTER")
+        f.label:SetPoint("LEFT", f.text, "RIGHT", 5, 0)
+        if iconShown then
+            if iconPos == "left" then
+                f.icon:SetPoint("RIGHT", f.text, "LEFT", -4, 0)
+            elseif f.label:IsShown() then
+                f.icon:SetPoint("LEFT", f.label, "RIGHT", 4, 0)
+            else
+                f.icon:SetPoint("LEFT", f.text, "RIGHT", 4, 0)
+            end
+        end
+        return
+    end
+
+    if not iconShown then
+        f.text:SetPoint("CENTER", f, "CENTER")
+    elseif iconPos == "left" then
+        f.icon:SetPoint("RIGHT", f, "CENTER", -2, 0)
+        f.text:SetPoint("LEFT", f, "CENTER", 2, 0)
+    else
+        f.text:SetPoint("RIGHT", f, "CENTER", -2, 0)
+        f.icon:SetPoint("LEFT", f, "CENTER", 3, 0)
+    end
+end
+
+local function ApplySpellIcon(f, spellID)
+    local icon = spellID and SpellIconFor(spellID)
+    if not icon then return false end
+    local size = (f.fontSize or 24) * (db.profile.spellIconSize or 1)
+    f.icon:SetTexture(icon)
+    f.icon:SetSize(size, size)
+    f.icon:Show()
+    f.spellIconID = spellID
+    LayoutTextPieces(f)
+    return true
+end
+
+local function IconTestPrint(f, result)
+    if not iconTestMode then return end
+    local amountText = f.amountSecret and "[hidden]" or tostring(f.amountValue)
+    CombatTextPlus:Print(("icontest | %s %s -> %s"):format(tostring(f.damageType), amountText, result))
+end
+
+local function StopIconDriver()
+    if iconDriver then iconDriver:SetScript("OnUpdate", nil) end
+end
+
+local function IconDriverUpdate()
+    PollMeter(false)
+    local now = GetTime()
+    local any = false
+    for f, p in pairs(pendingIcons) do
+        if f.released then
+            pendingIcons[f] = nil
+        elseif p.byTiming then
+            if (now - p.at) >= TIMING_SETTLE then
+                pendingIcons[f] = nil
+                local id, why = MatchByTiming(p.at, now)
+                if id and ApplySpellIcon(f, id) then
+                    IconTestPrint(f, SpellNameFor(id) .. " (meter timing)")
+                else
+                    local guess = db.profile.spellIconGuess and GuessFromLastCast(p.unit)
+                    if guess and ApplySpellIcon(f, guess) then
+                        IconTestPrint(f, SpellNameFor(guess) .. " (best guess)")
+                    else
+                        IconTestPrint(f, "no icon (" .. tostring(why) .. ")")
+                    end
+                end
+            else
+                any = true
+            end
+        else
+            local id = ClaimFromMeter(p.amount)
+            if id and ApplySpellIcon(f, id) then
+                pendingIcons[f] = nil
+                IconTestPrint(f, ("%s (meter, %.2fs later)"):format(SpellNameFor(id), now - p.at))
+            elseif (now - p.at) > PENDING_MAX_WAIT then
+                pendingIcons[f] = nil
+                local guess = db.profile.spellIconGuess and GuessFromLastCast(p.unit)
+                if guess and ApplySpellIcon(f, guess) then
+                    IconTestPrint(f, SpellNameFor(guess) .. " (best guess)")
+                else
+                    IconTestPrint(f, "no icon (no meter match: likely not your hit)")
+                end
+            else
+                any = true
+            end
+        end
+    end
+    if not any then StopIconDriver() end
+end
+
+local function StartIconDriver()
+    if not iconDriver then iconDriver = CreateFrame("Frame") end
+    iconDriver:SetScript("OnUpdate", IconDriverUpdate)
+end
+
+-- /ctp metertest: prints exactly what Blizzard's damage meter returns, so
+-- we can see whether it is readable and which way of asking works.
+local function MeterShow(v)
+    if v == nil then return "nil" end
+    if IsSecret(v) then return "[secret]" end
+    return tostring(v)
+end
+
+local function RunMeterTest()
+    local P = function(msg) CombatTextPlus:Print(msg) end
+    P("|cffffd100METER TEST|r")
+    if not C_DamageMeter then
+        P("  C_DamageMeter does not exist on this client.")
+        return
+    end
+
+    local names = {}
+    for k, v in pairs(C_DamageMeter) do
+        if type(v) == "function" then names[#names + 1] = k end
+    end
+    table.sort(names)
+    P("  Functions: " .. table.concat(names, ", "))
+
+    for _, enumName in ipairs({ "DamageMeterType", "DamageMeterSessionType" }) do
+        local e = Enum and Enum[enumName]
+        if e then
+            local parts = {}
+            for k, v in pairs(e) do parts[#parts + 1] = k .. "=" .. tostring(v) end
+            table.sort(parts)
+            P(("  Enum.%s: %s"):format(enumName, table.concat(parts, ", ")))
+        else
+            P(("  Enum.%s: missing"):format(enumName))
+        end
+    end
+
+    for _, cvar in ipairs({ "damageMeterEnabled", "damageMeter", "enableDamageMeter", "showDamageMeter" }) do
+        if C_CVar and C_CVar.GetCVar then
+            local ok, v = pcall(C_CVar.GetCVar, cvar)
+            if ok and v ~= nil then P(("  CVar %s = %s"):format(cvar, MeterShow(v))) end
+        end
+    end
+
+    local guid = UnitGUID("player")
+    P("  Player GUID: " .. (IsSecret(guid) and "[secret]" or (guid and "readable" or "nil")))
+    if not (Enum and Enum.DamageMeterType and Enum.DamageMeterType.DamageDone) or not C_DamageMeter.GetCombatSessionSourceFromType then
+        P("  GetCombatSessionSourceFromType or DamageDone type missing.")
+        return
+    end
+
+    for session = 0, 2 do
+        local ok, src = pcall(C_DamageMeter.GetCombatSessionSourceFromType, session, Enum.DamageMeterType.DamageDone, guid)
+        if not ok then
+            P(("  session %d: ERROR %s"):format(session, MeterShow(src)))
+        elseif src == nil then
+            P(("  session %d: returned nil"):format(session))
+        elseif IsSecret(src) then
+            P(("  session %d: whole result [secret]"):format(session))
+        else
+            local keys = {}
+            pcall(function()
+                for k, v in pairs(src) do keys[#keys + 1] = k .. "(" .. type(v) .. ")" end
+            end)
+            table.sort(keys)
+            P(("  session %d fields: %s"):format(session, table.concat(keys, ", ")))
+            local spells = src.combatSpells
+            if type(spells) ~= "table" then
+                P(("  session %d combatSpells: %s"):format(session, MeterShow(spells)))
+            else
+                local count = 0
+                pcall(function()
+                    for i, sp in ipairs(spells) do
+                        count = i
+                        if i <= 5 then
+                            local id = sp.spellID
+                            local nm = (type(id) == "number" and not IsSecret(id)) and SpellNameFor(id) or MeterShow(id)
+                            P(("    #%d spell %s (%s) total %s"):format(i, MeterShow(id), nm, MeterShow(sp.totalAmount)))
+                        end
+                    end
+                end)
+                P(("  session %d: %d spells"):format(session, count))
+            end
+        end
+    end
+end
+
+-- Called for every damage number as it appears.
+function CombatTextPlus:ResolveSpellIcon(f, amount, unit)
+    f.icon:Hide()
+    if not db.profile.showSpellIcons then return end
+    local t = f.damageType
+    if t == "heal" or t == "miss" or t == "avoid" then return end
+
+    if unit == "preview" then
+        ApplySpellIcon(f, AUTO_ATTACK_ID or 6603)
+        return
+    end
+
+    if CanUseMeter() and not f.amountSecret then
+        PollMeter(true)
+        local id = ClaimFromMeter(amount)
+        if id and ApplySpellIcon(f, id) then
+            IconTestPrint(f, SpellNameFor(id) .. " (meter)")
+            return
+        end
+        pendingIcons[f] = { amount = amount, at = GetTime(), unit = unit }
+        StartIconDriver()
+        return
+    end
+
+    if CanUseMeter() and f.amountSecret then
+        -- Hidden amount: match by when the meter moved instead.
+        PollMeter(true)
+        pendingIcons[f] = { at = GetTime(), unit = unit, byTiming = true }
+        StartIconDriver()
+        return
+    end
+
+    local guess = db.profile.spellIconGuess and GuessFromLastCast(unit)
+    if guess and ApplySpellIcon(f, guess) then
+        IconTestPrint(f, SpellNameFor(guess) .. " (best guess)")
+    else
+        IconTestPrint(f, f.amountSecret and "no icon (amount hidden by Blizzard)" or "no icon (damage meter not available)")
+    end
+end
+
+function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit, unit)
     if not anchor then return end
     if anchor.IsForbidden and anchor:IsForbidden() then return end
 
@@ -998,7 +1650,11 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit)
     end
 
     if anchor == centerAnchor then
-        MakeRoomInCenter()
+        MakeRoomOn(centerAnchor, db.profile.centerMaxNumbers or 6)
+    elseif anchor == avoidAnchor then
+        MakeRoomOn(avoidAnchor, db.profile.avoidanceMaxNumbers or 4)
+    elseif (db.profile.maxPerPlate or 0) > 0 then
+        MakeRoomOn(anchor, db.profile.maxPerPlate)
     end
 
     local f = AcquireTextFrame(anchor)
@@ -1022,9 +1678,19 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit)
     if damageType == "restricted" then
         local c = db.profile.restrictedColor
         dR, dG, dB = c.r, c.g, c.b
+    elseif damageType == "miss" then
+        local c = db.profile.missColor
+        dR, dG, dB = c.r, c.g, c.b
+    elseif damageType == "avoid" then
+        local c = db.profile.avoidanceColor
+        dR, dG, dB = c.r, c.g, c.b
     else
         dR, dG, dB = self:GetDamageTypeColor(damageType)
     end
+
+    f.amountSecret = secret
+    f.amountValue = (not secret) and amount or nil
+    f.fontSize = fontSize
 
     -- Labels anchor to the number's width, so they are skipped for secret numbers.
     local labelText = self:GetDamageTypeLabel(damageType)
@@ -1040,6 +1706,9 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit)
         f.label:Hide()
     end
 
+    self:ResolveSpellIcon(f, amount, unit)
+    LayoutTextPieces(f)
+
     f.text:SetTextColor(dR, dG, dB)
     if secret then
         f.text:SetText(amount)
@@ -1047,11 +1716,14 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit)
         f.text:SetText(shownText)
     end
 
-    self:ApplyAnimationStyle(f, anchor, damageType, 0, #list, #list)
+    f.bumpY, f.bumpTarget = 0, 0
+    f.lineH = fontSize * (db.profile.lineSpacing or 1.1)
+    self:PlaceFrame(f, 0, #list, #list, 0)
+    self:MakeRoomAbove(f)
     f:Show()
 
     local startTime = GetTime()
-    f:SetScript("OnUpdate", function(selfFrame)
+    f:SetScript("OnUpdate", function(selfFrame, elapsed)
         local profile = db.profile
         local duration = math.max(0.001, profile.scrollDuration or 0.5)
         local speed = math.max(0.0001, profile.speedFactor or 1)
@@ -1072,7 +1744,7 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit)
                 end
             end
         end
-        CombatTextPlus:ApplyAnimationStyle(selfFrame, selfFrame.anchor, selfFrame.damageType, progress, stackIndex, stackCount)
+        CombatTextPlus:PlaceFrame(selfFrame, progress, stackIndex, stackCount, elapsed)
     end)
 end
 
@@ -1234,6 +1906,16 @@ end
 
 -- Turns a damage event into a display type. Returns nil when the type is
 -- switched off in Damage Type Filters.
+-- Returns the text to show for a miss action, or nil if it should not show.
+-- A secret action can never be read, so it is never treated as a miss.
+function CombatTextPlus:GetMissText(action, enabledTypes)
+    if action == nil or IsSecret(action) then return nil end
+    local text = MISS_TEXT[action]
+    if not text then return nil end
+    if enabledTypes and not enabledTypes[action] then return nil end
+    return text
+end
+
 -- Third return is true when the hit is shown as a crit.
 --
 -- Crit handling:
@@ -1273,8 +1955,13 @@ function CombatTextPlus:HandleCenterTarget(action, flagText, amount, schoolMask)
 
     local canAttack = UnitCanAttack("player", "target")
     if IsSecret(canAttack) or not canAttack then return end
-    if not IsSecret(action) and action ~= "WOUND" then return end
-    if not IsSecret(amount) then
+
+    local missText
+    if not IsSecret(action) and action ~= "WOUND" then
+        if not db.profile.showMisses then return end
+        missText = self:GetMissText(action, db.profile.missTypes)
+        if not missText then return end
+    elseif not IsSecret(amount) then
         if type(amount) ~= "number" or amount <= 0 then return end
     end
 
@@ -1282,6 +1969,15 @@ function CombatTextPlus:HandleCenterTarget(action, flagText, amount, schoolMask)
         if debugMode then
             self:Print("center | HIDDEN by Only Enemies I'm Fighting")
         end
+        return
+    end
+
+    if missText then
+        if debugMode then
+            self:Print(("center | SHOWN as miss (%s)"):format(missText))
+        end
+        PositionCenterAnchor()
+        self:DisplayCombatText(GetCenterAnchor(), missText, "miss")
         return
     end
 
@@ -1297,7 +1993,18 @@ function CombatTextPlus:HandleCenterTarget(action, flagText, amount, schoolMask)
         self:Print(("center | SHOWN as %s%s"):format(damageType, isCrit and " (crit)" or ""))
     end
     PositionCenterAnchor()
-    self:DisplayCombatText(GetCenterAnchor(), amount, damageType, isCrit)
+    self:DisplayCombatText(GetCenterAnchor(), amount, damageType, isCrit, "target")
+end
+
+function CombatTextPlus:HandleSelfAvoidance(action)
+    if not db.profile.showMyAvoidance then return end
+    local text = self:GetMissText(action, db.profile.missTypes)
+    if not text then return end
+    if debugMode then
+        self:Print(("player | avoidance SHOWN (%s)"):format(text))
+    end
+    PositionAvoidAnchor()
+    self:DisplayCombatText(GetAvoidAnchor(), text, "avoid")
 end
 
 ------------------------------------------------------------
@@ -1327,6 +2034,11 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
             self:Print(("target | action: %s | target nameplate: %s"):format(
                 IsSecret(action) and "[secret]" or tostring(action), plateState))
         end
+    end
+
+    if unit == "player" then
+        self:HandleSelfAvoidance(action)
+        return
     end
 
     local mode = db.profile.displayMode or "nameplates"
@@ -1371,10 +2083,14 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
         if plate ~= C_NamePlate.GetNamePlateForUnit("target") then return end
     end
 
-    local isHeal
+    local isHeal, missText
     if isHostile then
-        -- Enemy plate: damage only.
-        if not IsSecret(action) and action ~= "WOUND" then return end
+        -- Enemy plate: damage, plus misses when Show Misses is on.
+        if not IsSecret(action) and action ~= "WOUND" then
+            if not db.profile.showMisses then return end
+            missText = self:GetMissText(action, db.profile.missTypes)
+            if not missText then return end
+        end
         isHeal = false
     else
         -- Friendly plate: heals only. If Blizzard hides the action, we cannot
@@ -1383,7 +2099,7 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
         isHeal = true
     end
 
-    if not IsSecret(amount) then
+    if not missText and not IsSecret(amount) then
         if type(amount) ~= "number" or amount <= 0 then return end
     end
 
@@ -1402,6 +2118,14 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
             end
             return
         end
+    end
+
+    if missText then
+        if DebugWants(unit) then
+            self:Print(("%s | SHOWN as miss (%s)"):format(unit, missText))
+        end
+        self:DisplayCombatText(plate, missText, "miss")
+        return
     end
 
     if isHeal and not self:IsHealAllowed(unit, plate) then
@@ -1433,7 +2157,7 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
     if DebugWants(unit) then
         self:Print(("%s | SHOWN as %s%s"):format(unit, damageType, isCrit and " (crit)" or ""))
     end
-    self:DisplayCombatText(plate, amount, damageType, isCrit)
+    self:DisplayCombatText(plate, amount, damageType, isCrit, unit)
 end
 
 ------------------------------------------------------------
@@ -1491,6 +2215,19 @@ function CombatTextPlus:SlashCommand(input)
         self:ShowPreviewCombatText()
     elseif input == "colors" then
         self:ApplyColorPreset()
+    elseif input == "metertest" then
+        RunMeterTest()
+    elseif input == "icontest" then
+        iconTestMode = not iconTestMode
+        if iconTestMode then
+            PollMeter(true)
+            local count = 0
+            for _ in pairs(meterTotals) do count = count + 1 end
+            self:Print(("Spell icon test ON. Damage meter: %s, spells with readable totals: %d (0 is normal before your first fight). Each damage number prints which spell it was matched to. Type /ctp icontest again to stop."):format(
+                CanUseMeter() and "available" or "NOT AVAILABLE", count))
+        else
+            self:Print("Spell icon test OFF.")
+        end
     elseif input == "debug" then
         if debugMode then
             debugMode = false
@@ -1720,6 +2457,33 @@ local function BuildOptions()
                         set = function(_, value) db.profile.keepTextOnRemoval = value end,
                         order = 1,
                     },
+                    preventOverlap = {
+                        name = "Prevent Overlap",
+                        type = "toggle",
+                        desc = "When a new number appears, numbers too close above it are pushed up one line so they never sit on top of each other. Works with every animation style.",
+                        get = function() return db.profile.preventOverlap end,
+                        set = function(_, value) db.profile.preventOverlap = value end,
+                        order = 1.1,
+                    },
+                    lineSpacing = {
+                        name = "Line Spacing",
+                        type = "range",
+                        min = 0.6, max = 2.0, step = 0.05,
+                        desc = "How far apart pushed numbers sit, as a multiple of their font size. 1.0 is touching, higher is looser.",
+                        get = function() return db.profile.lineSpacing end,
+                        set = function(_, value) db.profile.lineSpacing = value end,
+                        disabled = function() return not db.profile.preventOverlap end,
+                        order = 1.2,
+                    },
+                    maxPerPlate = {
+                        name = "Max Numbers Per Nameplate",
+                        type = "range",
+                        min = 0, max = 20, step = 1,
+                        desc = "The most numbers one nameplate shows at once. When full, the oldest is removed to make room, and crits are kept over normal hits. 0 means no limit. Keeps busy targets like world bosses readable.",
+                        get = function() return db.profile.maxPerPlate end,
+                        set = function(_, value) db.profile.maxPerPlate = value end,
+                        order = 1.3,
+                    },
                     displayMode = {
                         name = "Show Numbers On",
                         type = "select",
@@ -1787,11 +2551,11 @@ local function BuildOptions()
             startYOffset = {
                 name = "Start Y Offset",
                 type = "range",
-                min = -200, max = 200, step = 5,
-                desc = "Initial vertical offset for combat text. This helps to position combat text above or below nameplates.",
+                desc = "Where numbers start, relative to the nameplate. Raise it so numbers spawn above the nameplate instead of covering it, or lower it to start below. 0 is the original spot.",
+                min = -100, max = 200, step = 5,
                 get = function() return db.profile.startYOffset end,
                 set = function(_, value) db.profile.startYOffset = value end,
-                order = 3,
+                order = 2.9,
             },
             maxYOffset = {
                 name = "Max Y Offset",
@@ -1800,7 +2564,7 @@ local function BuildOptions()
                 min = 50, max = 300, step = 10,
                 get = function() return db.profile.maxYOffset end,
                 set = function(_, value) db.profile.maxYOffset = value end,
-                order = 4,
+                order = 3,
             },
             speedFactor = {
                 name = "Speed Factor",
@@ -1809,7 +2573,7 @@ local function BuildOptions()
                 min = 0.25, max = 5.0, step = 0.05,
                 get = function() return db.profile.speedFactor end,
                 set = function(_, value) db.profile.speedFactor = value end,
-                order = 5,
+                order = 4,
             },
             damageTypeOffsets = {
                 name = "Damage Type Offsets",
@@ -1817,20 +2581,8 @@ local function BuildOptions()
                 inline = true,
                 desc = "Customize the horizontal movement of text based on damage type.",
                 args = offsetArgs,
-                order = 6,
+                order = 5,
             },
-feature/start-y-offset
-            dotYOffsetMultiplier = {
-                name = "DOT Y Offset Multiplier",
-                type = "range",
-                desc = "Adjust the vertical movement of DOT text.",
-                min = 0.1, max = 2.0, step = 0.1,
-                get = function() return db.profile.dotYOffsetMultiplier end,
-                set = function(_, value) db.profile.dotYOffsetMultiplier = value end,
-                order = 7,
-            },
-
-main
             fontSize = {
                 name = "Font Size",
                 type = "range",
@@ -1844,7 +2596,7 @@ main
                     end
                     CombatTextPlus:RefreshFonts()
                 end,
-                order = 8,
+                order = 7,
             },
             labelFontSize = {
                 name = "Label Font Size",
@@ -1856,7 +2608,7 @@ main
                     db.profile.labelFontSize = value
                     CombatTextPlus:RefreshFonts()
                 end,
-                order = 9,
+                order = 8,
             },
             showLabels = {
                 name = "Show Labels",
@@ -1867,7 +2619,44 @@ main
                     db.profile.showLabels = value
                     CombatTextPlus:ApplySettings()
                 end,
-                order = 10,
+                order = 9,
+            },
+            showSpellIcons = {
+                name = "Show Spell Icons",
+                type = "toggle",
+                desc = "Show the icon of the spell that made each hit. Icons are confirmed with Blizzard's built in damage meter, so a hit only gets an icon when its spell can be matched. Hits from other players, and hits whose amount Blizzard hides, show no icon. Retail only.",
+                get = function() return db.profile.showSpellIcons end,
+                set = function(_, value) db.profile.showSpellIcons = value end,
+                order = 9.1,
+            },
+            spellIconPosition = {
+                name = "Icon Position",
+                type = "select",
+                values = { left = "Left of Number", right = "Right of Number" },
+                sorting = { "left", "right" },
+                get = function() return db.profile.spellIconPosition end,
+                set = function(_, value) db.profile.spellIconPosition = value end,
+                disabled = function() return not db.profile.showSpellIcons end,
+                order = 9.2,
+            },
+            spellIconSize = {
+                name = "Icon Size",
+                type = "range",
+                min = 0.5, max = 2.0, step = 0.05,
+                desc = "Icon size compared to the number's font size. 1.0 matches the number, so bigger numbers like crits get bigger icons.",
+                get = function() return db.profile.spellIconSize end,
+                set = function(_, value) db.profile.spellIconSize = value end,
+                disabled = function() return not db.profile.showSpellIcons end,
+                order = 9.3,
+            },
+            spellIconGuess = {
+                name = "Best Guess When Unconfirmed",
+                type = "toggle",
+                desc = "When a hit cannot be confirmed (for example Blizzard hides the amount in boss fights), use your last cast if the hit landed right after it, on the enemy you cast at. More icons, but some may be wrong. Off by default.",
+                get = function() return db.profile.spellIconGuess end,
+                set = function(_, value) db.profile.spellIconGuess = value end,
+                disabled = function() return not db.profile.showSpellIcons end,
+                order = 9.4,
             },
             font = {
                 name = "Font",
@@ -1880,7 +2669,7 @@ main
                     db.profile.font = value
                     CombatTextPlus:RefreshFonts()
                 end,
-                order = 11,
+                order = 10,
             },
             colorPreset = {
                 name = "Use Default Colors",
@@ -1898,7 +2687,7 @@ main
                 inline = true,
                 desc = "Customize the color of the labels that appear next to each type of damage.",
                 args = labelColorArgs,
-                order = 12,
+                order = 11,
             },
             damageTypeFilters = {
                 name = "Damage Type Filters",
@@ -1906,7 +2695,7 @@ main
                 inline = true,
                 desc = "Select which types of damage you want to see displayed during combat.",
                 args = filterArgs,
-                order = 13,
+                order = 12,
             },
             damageTypeColors = {
                 name = "Damage Type Colors",
@@ -1914,7 +2703,7 @@ main
                 inline = true,
                 desc = "Customize the color of the combat text for each damage type.",
                 args = colorArgs,
-                order = 14,
+                order = 13,
             },
             minimap = {
                 name = "Show Minimap Button",
@@ -1929,7 +2718,7 @@ main
                         icon:Show("CombatTextPlus")
                     end
                 end,
-                order = 15,
+                order = 14,
             },
             damageTypeFontSizes = {
                 name = "Damage Type Font Sizes",
@@ -1937,7 +2726,7 @@ main
                 inline = true,
                 desc = "Customize the font size for each damage type.",
                 args = fontSizeArgs,
-                order = 16,
+                order = 15,
             },
             animationStyle = {
                 name = "Animation Style",
@@ -1946,7 +2735,124 @@ main
                 values = ANIMATION_STYLES,
                 get = function() return db.profile.animationStyle end,
                 set = function(_, value) db.profile.animationStyle = value end,
-                order = 17,
+                order = 16,
+            },
+            misses = {
+                name = "Misses & Avoidance",
+                type = "group",
+                inline = true,
+                order = 16.7,
+                args = {
+                    info = {
+                        type = "description",
+                        name = "Enemy misses have the same limit as damage: the game does not say whose attack missed, so in a group you will see other players' misses too. In boss fights and Mythic+, Blizzard may hide the result, and those misses cannot be shown.",
+                        order = 0,
+                    },
+                    showMisses = {
+                        name = "Show Misses on Enemies",
+                        type = "toggle",
+                        width = "full",
+                        desc = "Show Miss, Dodge, Parry, Immune, and so on when an attack on an enemy you are fighting does no damage. Follows Show Numbers On, so it appears on nameplates, center screen, or both.",
+                        get = function() return db.profile.showMisses end,
+                        set = function(_, value) db.profile.showMisses = value end,
+                        order = 1,
+                    },
+                    showMyAvoidance = {
+                        name = "Show My Avoidance",
+                        type = "toggle",
+                        width = "full",
+                        desc = "Show Dodge, Parry, Block, and so on when you avoid an attack. Appears in its own spot near your character. Handy for tanks.",
+                        get = function() return db.profile.showMyAvoidance end,
+                        set = function(_, value) db.profile.showMyAvoidance = value end,
+                        order = 2,
+                    },
+                    missTypes = {
+                        name = "Show These Results",
+                        type = "multiselect",
+                        desc = "Pick which results to show. Applies to both enemy misses and your own avoidance.",
+                        values = MISS_TEXT,
+                        get = function(_, key) return db.profile.missTypes[key] end,
+                        set = function(_, key, value) db.profile.missTypes[key] = value end,
+                        disabled = function() return not db.profile.showMisses and not db.profile.showMyAvoidance end,
+                        order = 3,
+                    },
+                    missColor = {
+                        name = "Enemy Miss Color",
+                        type = "color",
+                        get = function() local c = db.profile.missColor; return c.r, c.g, c.b end,
+                        set = function(_, r, g, b) local c = db.profile.missColor; c.r, c.g, c.b = r, g, b end,
+                        disabled = function() return not db.profile.showMisses end,
+                        order = 4,
+                    },
+                    missFontSize = {
+                        name = "Enemy Miss Font Size",
+                        type = "range",
+                        min = 6, max = 48, step = 1,
+                        get = function() return db.profile.missFontSize end,
+                        set = function(_, value)
+                            db.profile.missFontSize = value
+                            CombatTextPlus:RefreshFonts("miss")
+                        end,
+                        disabled = function() return not db.profile.showMisses end,
+                        order = 5,
+                    },
+                    avoidanceColor = {
+                        name = "My Avoidance Color",
+                        type = "color",
+                        get = function() local c = db.profile.avoidanceColor; return c.r, c.g, c.b end,
+                        set = function(_, r, g, b) local c = db.profile.avoidanceColor; c.r, c.g, c.b = r, g, b end,
+                        disabled = function() return not db.profile.showMyAvoidance end,
+                        order = 6,
+                    },
+                    avoidanceFontSize = {
+                        name = "My Avoidance Font Size",
+                        type = "range",
+                        min = 6, max = 48, step = 1,
+                        get = function() return db.profile.avoidanceFontSize end,
+                        set = function(_, value)
+                            db.profile.avoidanceFontSize = value
+                            CombatTextPlus:RefreshFonts("avoid")
+                        end,
+                        disabled = function() return not db.profile.showMyAvoidance end,
+                        order = 7,
+                    },
+                    avoidanceMaxNumbers = {
+                        name = "My Avoidance Max Shown",
+                        type = "range",
+                        min = 1, max = 10, step = 1,
+                        desc = "The most avoidance texts shown at once. The oldest is removed to make room.",
+                        get = function() return db.profile.avoidanceMaxNumbers end,
+                        set = function(_, value) db.profile.avoidanceMaxNumbers = value end,
+                        disabled = function() return not db.profile.showMyAvoidance end,
+                        order = 8,
+                    },
+                    avoidanceX = {
+                        name = "My Avoidance Horizontal Position",
+                        type = "range",
+                        min = -800, max = 800, step = 5,
+                        desc = "Left or right from the middle of the screen. Use Preview to see the spot.",
+                        get = function() return db.profile.avoidanceX end,
+                        set = function(_, value)
+                            db.profile.avoidanceX = value
+                            PositionAvoidAnchor()
+                        end,
+                        disabled = function() return not db.profile.showMyAvoidance end,
+                        order = 9,
+                    },
+                    avoidanceY = {
+                        name = "My Avoidance Vertical Position",
+                        type = "range",
+                        min = -500, max = 500, step = 5,
+                        desc = "Up or down from the middle of the screen. Use Preview to see the spot.",
+                        get = function() return db.profile.avoidanceY end,
+                        set = function(_, value)
+                            db.profile.avoidanceY = value
+                            PositionAvoidAnchor()
+                        end,
+                        disabled = function() return not db.profile.showMyAvoidance end,
+                        order = 10,
+                    },
+                },
             },
             crits = {
                 name = "Crits",
@@ -2026,13 +2932,13 @@ main
                 },
                 get = function() return db.profile.animationEasing end,
                 set = function(_, value) db.profile.animationEasing = value end,
-                order = 18,
+                order = 17,
             },
             tuning = {
                 name = "Animation Tuning",
                 type = "group",
                 inline = true,
-                order = 19,
+                order = 18,
                 args = {
                     amplitude = {
                         name = "Amplitude",
@@ -2149,6 +3055,9 @@ function CombatTextPlus:OnInitialize()
             -- unit, castGUID, spellID
             local _, _, spellID = ...
             OnPlayerCast(spellID)
+            if event == "UNIT_SPELLCAST_SUCCEEDED" then
+                RecordCast(spellID)
+            end
         elseif event == "PLAYER_ENTER_COMBAT" then
             MarkTargetEngaged()
         elseif event == "PLAYER_TARGET_CHANGED" then
