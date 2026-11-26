@@ -1,5 +1,15 @@
 -- Made by Sharpedge_Gaming
--- v3.8 for 12.1.5 Midnight/Wow Forever
+-- v4.4 
+--
+-- Data source: UNIT_COMBAT on nameplates. Works everywhere, including boss
+-- encounters and Mythic+. Numbers that Blizzard marks secret are passed
+-- straight to FontString:SetText and never touched by Lua math.
+-- The combat log is not used at all. In 12.0, registering
+-- COMBAT_LOG_EVENT_UNFILTERED from an addon is a forbidden action.
+--
+-- There is no separate DoT type. UNIT_COMBAT gives a periodic tick the same
+-- action, flag, and school as a direct hit, so DoTs show as their school
+-- and DoT crits show as crits.
 
 local addonName = "CombatTextPlus"
 
@@ -9,6 +19,37 @@ local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 local AceDB = LibStub("AceDB-3.0")
 local AceDBOptions = LibStub("AceDBOptions-3.0")
 local LSM = LibStub("LibSharedMedia-3.0")
+local ADDON_FOLDER = (...) or "CombatTextPlus"
+
+-- Bundled fonts (Media\Fonts). All are free to redistribute; their licenses
+-- are in Media\Fonts\Licenses. Registering them with LibSharedMedia adds
+-- them to the Font dropdown, and lets other addons use them too.
+do
+    local path = "Interface\\AddOns\\" .. ADDON_FOLDER .. "\\Media\\Fonts\\"
+    local fonts = {
+        { "CTP: Bangers",          "Bangers.ttf" },
+        { "CTP: Bebas Neue",       "BebasNeue.ttf" },
+        { "CTP: Anton",            "Anton.ttf" },
+        { "CTP: Russo One",        "RussoOne.ttf" },
+        { "CTP: Black Ops One",    "BlackOpsOne.ttf" },
+        { "CTP: Bungee",           "Bungee.ttf" },
+        { "CTP: Staatliches",      "Staatliches.ttf" },
+        { "CTP: Permanent Marker", "PermanentMarker.ttf" },
+        { "CTP: Pirata One",       "PirataOne.ttf" },
+        { "CTP: New Rocker",       "NewRocker.ttf" },
+        { "CTP: Germania One",     "GermaniaOne.ttf" },
+        { "CTP: Nosifer",          "Nosifer.ttf" },
+        { "CTP: Creepster",        "Creepster.ttf" },
+        { "CTP: Press Start 2P",   "PressStart2P.ttf" },
+        { "CTP: Audiowide",        "Audiowide.ttf" },
+        { "CTP: Zen Dots",         "ZenDots.ttf" },
+        { "CTP: Luckiest Guy",     "LuckiestGuy.ttf" },
+        { "CTP: Titan One",        "TitanOne.ttf" },
+    }
+    for _, f in ipairs(fonts) do
+        LSM:Register("font", f[1], path .. f[2])
+    end
+end
 local LDB = LibStub("LibDataBroker-1.1")
 local icon = LibStub("LibDBIcon-1.0")
 
@@ -137,6 +178,7 @@ local savedVariables = {
         scrollDuration = 1.5,
         animationStyle = "fade",
         animationEasing = "linear",
+        startXOffset = 0,           -- where numbers start, right (+) or left (-) of the nameplate center
         startYOffset = 0,           -- where numbers start, above (+) or below (-) the nameplate. Contributed by Borod4r.
         maxYOffset = 100,
         speedFactor = 1.0,
@@ -157,7 +199,17 @@ local savedVariables = {
             heal = 24, crit = 24,
         },
         showLabels = true,
+        numberStyle = "classic",    -- "classic", "neon", "comic", "glitch", or "elemental"
+        numberStyleCritsOnly = false, -- style only crits; normal hits stay classic
         showSpellIcons = false,     -- icon of the spell that made each hit
+        showPetTag = false,         -- tag your pet's ability hits with "Pet"
+        petTagPosition = "right",   -- "left" or "right" of the number
+        petTagColor = {r = 0.45, g = 0.95, b = 0.80},
+        colorPetNumbers = false,    -- also color the pet's numbers with petNumberColor
+        petNumberColor = {r = 1.00, g = 0.60, b = 0.90}, -- pet number color, separate from the tag
+        petTagText = "pet",         -- "pet", "PET", "(Pet)", "[Pet]", or "name" (your pet's name)
+        petTagSize = 1.0,           -- tag size as a multiple of the label font size
+        lookUndo = nil,             -- settings saved before the last One Click Look
         spellIconPosition = "left", -- "left" or "right" of the number
         spellIconSize = 1.0,        -- icon size as a multiple of the number's font size
         spellIconGuess = false,     -- when a hit cannot be confirmed, use your last cast if it clearly fits
@@ -269,6 +321,8 @@ local ghostPool = {}        -- spare anchors for numbers whose nameplate went aw
 local centerAnchor          -- fixed anchor for the center screen display
 local avoidAnchor           -- fixed anchor for your own avoidance text
 local targetEngagedAt = 0   -- GetTime() of your last attack on your current target
+local lastHarmfulCastAt = 0 -- GetTime() of your last harmful spell, on any target
+local pendingSchoolMask     -- school of the hit being displayed right now (may be hidden)
 
 local plateByUnit = {}      -- "nameplate3" -> plate frame
 local engagedPlates = {}    -- [plate] = GetTime() of your last attack on that enemy
@@ -400,8 +454,18 @@ local function ReleaseTextFrame(f)
     f.text:SetText("")
     f.label:SetText("")
     if f.icon then f.icon:Hide() end
+    if f.petTag then f.petTag:Hide() end
+    f.isPetHit, f.petSpellID = nil, nil
     f.spellIconID = nil
     pendingIcons[f] = nil
+    if f.fx then
+        f.fxMode = nil
+        local fx = f.fx
+        fx.glow:Hide(); fx.burst:Hide(); fx.burst2:Hide(); fx.word:Hide()
+        for i = 1, #fx.copies do fx.copies[i]:Hide() end
+        for i = 1, #fx.parts do fx.parts[i]:Hide() end
+        f.text:SetAlpha(1)
+    end
     f.anchor = nil
     f.damageType = nil
     f.startTime = nil
@@ -420,6 +484,9 @@ local function AcquireTextFrame(anchor)
         f.text:SetPoint("CENTER", f, "CENTER")
         f.label = f:CreateFontString(nil, "OVERLAY")
         f.label:SetPoint("LEFT", f.text, "RIGHT", 5, 0)
+        f.petTag = f:CreateFontString(nil, "OVERLAY")
+        f.petTag:SetFontObject(GameFontNormal)
+        f.petTag:Hide()
         f.icon = f:CreateTexture(nil, "OVERLAY")
         f.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92) -- trim the icon's built in border
         f.icon:Hide()
@@ -780,13 +847,44 @@ end
 -- One entry point for your own casts: marks an enemy target as fought
 -- or a friendly target as healed, whichever applies.
 local function OnPlayerCast(spellID)
+    if IsAttackSpell(spellID) then lastHarmfulCastAt = GetTime() end
     MarkTargetEngaged(spellID)
     MarkTargetHealed(spellID)
 end
 
+-- Auto attack state comes from events: PLAYER_ENTER_COMBAT and
+-- PLAYER_LEAVE_COMBAT fire when melee auto attack turns on and off, and
+-- START/STOP_AUTOREPEAT_SPELL for Auto Shot and wands. Midnight removed the
+-- old global IsCurrentSpell, so the events are the main source and the
+-- spell check is only a backup.
+local autoMeleeOn, autoRepeatOn = false, false
+
 local function IsAutoAttacking()
-    if not IsCurrentSpell then return false end
-    return IsCurrentSpell(AUTO_ATTACK_ID) or IsCurrentSpell(AUTO_SHOT_ID)
+    if autoMeleeOn or autoRepeatOn then return true end
+    local check = (C_Spell and C_Spell.IsCurrentSpell) or IsCurrentSpell
+    if not check then return false end
+    for _, id in ipairs({ AUTO_ATTACK_ID, AUTO_SHOT_ID }) do
+        local ok, on = pcall(check, id)
+        if ok and on and not IsSecret(on) then return true end
+    end
+    return false
+end
+
+-- Auto attack swings and Auto Shot fire no cast events, so a long stretch
+-- of pure auto attacking never refreshed the engage stamp. After the
+-- Engage Timeout ran out, your own swings were hidden. While auto attack
+-- is on, your current target stays yours.
+local function RefreshAutoAttackTarget(plate)
+    if not IsAutoAttacking() then return false end
+    if not UnitExists("target") then return false end
+    local canAttack = UnitCanAttack("player", "target")
+    if IsSecret(canAttack) or not canAttack then return false end
+    local now = GetTime()
+    targetEngagedAt = now
+    local targetPlate = C_NamePlate.GetNamePlateForUnit("target")
+    if targetPlate then engagedPlates[targetPlate] = now end
+    if plate == nil then return true end
+    return targetPlate ~= nil and targetPlate == plate
 end
 
 ------------------------------------------------------------
@@ -875,11 +973,12 @@ local function SetTextPos(f, anchor, x, y)
     -- animation style starts from the same raised or lowered spot.
     -- Fixed displays (center screen, avoidance) are already placed by their
     -- own position sliders, so it only applies to nameplates.
-    local start = 0
+    local startX, start = 0, 0
     if anchor ~= centerAnchor and anchor ~= avoidAnchor then
+        startX = db.profile.startXOffset or 0
         start = db.profile.startYOffset or 0
     end
-    f:SetPoint("CENTER", anchor, "BOTTOM", x, y + bump + start)
+    f:SetPoint("CENTER", anchor, "BOTTOM", x + startX, y + bump + start)
     f.curY = y + bump
 end
 
@@ -1176,6 +1275,15 @@ local function SpellIconFor(spellID)
             icon = info.iconID
         end
     end
+    -- Older clients use the global versions of these functions.
+    if not icon and GetSpellTexture then
+        local ok, tex = pcall(GetSpellTexture, spellID)
+        if ok and tex and not IsSecret(tex) then icon = tex end
+    end
+    if not icon and GetSpellInfo then
+        local ok, _, _, tex = pcall(GetSpellInfo, spellID)
+        if ok and tex and not IsSecret(tex) then icon = tex end
+    end
     iconCache[spellID] = icon or false
     return icon
 end
@@ -1183,6 +1291,10 @@ end
 local function SpellNameFor(spellID)
     if C_Spell and C_Spell.GetSpellName then
         local ok, name = pcall(C_Spell.GetSpellName, spellID)
+        if ok and name and not IsSecret(name) then return name end
+    end
+    if GetSpellInfo then
+        local ok, name = pcall(GetSpellInfo, spellID)
         if ok and name and not IsSecret(name) then return name end
     end
     return tostring(spellID)
@@ -1405,39 +1517,79 @@ local function RecordCast(spellID)
     lastCast.targetGUID = (g ~= nil and not IsSecret(g)) and g or nil
 end
 
--- Positions the number, label, and icon. A hidden (secret) number's width
--- cannot be used, so for those the number and icon meet at the frame's
--- center instead of being placed against the number's edges.
+-- Anchors the number and remembers where, so effects can follow it later.
+-- The position is never read back from the game: once a number is hidden,
+-- its anchor comes back hidden too.
+local function SetTextAnchor(f, point, x, y)
+    f.text:SetPoint(point, f, "CENTER", x, y)
+    f.textPoint, f.textX, f.textY = point, x, y
+end
+
+-- Chains pieces outward from a starting point, one after another.
+local function ChainPieces(pieces, dir, first, firstRel, firstX)
+    local prev
+    for i, piece in ipairs(pieces) do
+        piece:ClearAllPoints()
+        if dir > 0 then
+            if i == 1 then piece:SetPoint("LEFT", first, firstRel, firstX, 0)
+            else piece:SetPoint("LEFT", prev, "RIGHT", 4, 0) end
+        else
+            if i == 1 then piece:SetPoint("RIGHT", first, firstRel, firstX, 0)
+            else piece:SetPoint("RIGHT", prev, "LEFT", -4, 0) end
+        end
+        prev = piece
+    end
+end
+
+-- Positions the number and the pieces around it: label, spell icon, and
+-- Pet tag. A hidden (secret) number's width cannot be used, so for those
+-- every piece goes on one side, starting from the frame's center. The
+-- hidden amount is never read, measured, or changed.
+--   Plain number:   [pet] [icon] number [label] [icon] [pet]
+--   Hidden number:  number | [label] [icon] [pet]      (nothing on the left)
+--                   [pet] [icon] [label] | number      (something on the left)
 local function LayoutTextPieces(f)
-    local iconShown = f.icon:IsShown()
     local iconPos = db.profile.spellIconPosition or "left"
+    local petPos = db.profile.petTagPosition or "right"
+    local iconShown = f.icon:IsShown()
+    local petShown = f.petTag and f.petTag:IsShown()
+    local labelShown = f.label:IsShown()
+
     f.text:ClearAllPoints()
     f.label:ClearAllPoints()
     f.icon:ClearAllPoints()
+    if f.petTag then f.petTag:ClearAllPoints() end
+
+    -- Pieces to the left of the number (closest first) and to the right.
+    local left, right = {}, {}
+    if labelShown then right[#right + 1] = f.label end
+    if iconShown then
+        if iconPos == "left" then left[#left + 1] = f.icon else right[#right + 1] = f.icon end
+    end
+    if petShown then
+        if petPos == "left" then left[#left + 1] = f.petTag else right[#right + 1] = f.petTag end
+    end
 
     if not f.amountSecret then
-        f.text:SetPoint("CENTER", f, "CENTER")
-        f.label:SetPoint("LEFT", f.text, "RIGHT", 5, 0)
-        if iconShown then
-            if iconPos == "left" then
-                f.icon:SetPoint("RIGHT", f.text, "LEFT", -4, 0)
-            elseif f.label:IsShown() then
-                f.icon:SetPoint("LEFT", f.label, "RIGHT", 4, 0)
-            else
-                f.icon:SetPoint("LEFT", f.text, "RIGHT", 4, 0)
-            end
-        end
+        SetTextAnchor(f, "CENTER", 0, 0)
+        if #right > 0 then ChainPieces(right, 1, f.text, "RIGHT", 5) end
+        if #left > 0 then ChainPieces(left, -1, f.text, "LEFT", -4) end
         return
     end
 
-    if not iconShown then
-        f.text:SetPoint("CENTER", f, "CENTER")
-    elseif iconPos == "left" then
-        f.icon:SetPoint("RIGHT", f, "CENTER", -2, 0)
-        f.text:SetPoint("LEFT", f, "CENTER", 2, 0)
+    if #left == 0 and #right == 0 then
+        SetTextAnchor(f, "CENTER", 0, 0)
+    elseif #left > 0 then
+        -- The number starts at the center; everything else sits to its left.
+        SetTextAnchor(f, "LEFT", 2, 0)
+        local all = {}
+        for _, piece in ipairs(left) do all[#all + 1] = piece end
+        for _, piece in ipairs(right) do all[#all + 1] = piece end
+        ChainPieces(all, -1, f, "CENTER", -2)
     else
-        f.text:SetPoint("RIGHT", f, "CENTER", -2, 0)
-        f.icon:SetPoint("LEFT", f, "CENTER", 3, 0)
+        -- The number ends at the center; everything else follows it.
+        SetTextAnchor(f, "RIGHT", -2, 0)
+        ChainPieces(right, 1, f, "CENTER", 3)
     end
 end
 
@@ -1598,6 +1750,98 @@ local function RunMeterTest()
     end
 end
 
+------------------------------------------------------------
+-- Pet tag
+-- Pet hits look exactly like yours on the enemy's nameplate. But when your
+-- pet uses an ability (Firebolt, Claw, Legion Strike...), the game fires a
+-- cast event for it. A hit that lands right after that, on the enemy your
+-- pet is attacking, is tagged "Pet". Plain pet auto attacks have no cast
+-- event, so they are not tagged. If your own cast fits the hit just as
+-- well, the hit gets no tag rather than a wrong one.
+------------------------------------------------------------
+local lastPetCast = { id = nil, at = 0, targetGUID = nil, used = true }
+local PET_WINDOW = 0.8      -- seconds after a pet cast its hit can land (covers bolt travel)
+local PLAYER_WINDOW = 0.6
+
+local function RecordPetCast(spellID)
+    if spellID == nil or IsSecret(spellID) or type(spellID) ~= "number" then return end
+    if spellID == AUTO_ATTACK_ID or spellID == AUTO_SHOT_ID then return end
+    local check = C_Spell and C_Spell.IsSpellHarmful
+    if check then
+        local ok, harmful = pcall(check, spellID)
+        if ok and harmful ~= nil and not IsSecret(harmful) and not harmful then return end
+    end
+    local g = UnitGUID("pettarget")
+    lastPetCast.id, lastPetCast.at, lastPetCast.used = spellID, GetTime(), false
+    lastPetCast.targetGUID = (g ~= nil and not IsSecret(g)) and g or nil
+end
+
+local function SameTarget(unit, guid)
+    if not unit or not guid then return false end
+    local g = UnitGUID(unit)
+    if g == nil or IsSecret(g) then return false end
+    return g == guid
+end
+
+-- Returns the pet spell this hit came from, or nil.
+local function MatchPetHit(unit)
+    if not unit or unit == "preview" or lastPetCast.used or not lastPetCast.id then return nil end
+    local now = GetTime()
+    if (now - lastPetCast.at) > PET_WINDOW then return nil end
+    if not SameTarget(unit, lastPetCast.targetGUID) then return nil end
+    -- Your own cast fits too: cannot tell, so no tag.
+    if lastCast.id and (now - lastCast.at) <= PLAYER_WINDOW and SameTarget(unit, lastCast.targetGUID) then
+        return nil
+    end
+    lastPetCast.used = true -- one ability, one hit
+    return lastPetCast.id
+end
+
+local PET_TAG_TEXTS = { pet = "Pet", PET = "PET", paren = "(Pet)", bracket = "[Pet]" }
+
+function CombatTextPlus:GetPetTagText()
+    local choice = db.profile.petTagText or "pet"
+    if choice == "name" then
+        local name = UnitName("pet")
+        if name and not IsSecret(name) and name ~= "" then return name end
+        return "Pet"
+    end
+    return PET_TAG_TEXTS[choice] or "Pet"
+end
+
+function CombatTextPlus:ApplyPetTag(f, unit)
+    f.petTag:Hide()
+    if not db.profile.showPetTag then return end
+    local t = f.damageType
+    if t == "heal" or t == "miss" or t == "avoid" then return end
+
+    local petSpell
+    if unit == "preview" then
+        if f.damageType ~= "fire" then return end -- the preview tags one sample
+        petSpell = 0
+    else
+        petSpell = MatchPetHit(unit)
+    end
+    if not petSpell then return end
+
+    f.isPetHit = true
+    f.petSpellID = (petSpell ~= 0) and petSpell or nil
+    local c = db.profile.petTagColor
+    local fontPath = LSM:Fetch("font", db.profile.font)
+    local tagSize = math.max(8, (db.profile.labelFontSize or 14) * (db.profile.petTagSize or 1))
+    f.petTag:SetFont(fontPath, tagSize, "OUTLINE")
+    f.petTag:SetTextColor(c.r, c.g, c.b)
+    f.petTag:SetText(CombatTextPlus:GetPetTagText())
+    f.petTag:Show()
+    if db.profile.colorPetNumbers then
+        local n = db.profile.petNumberColor
+        f.text:SetTextColor(n.r, n.g, n.b)
+    end
+    if iconTestMode then
+        CombatTextPlus:Print(("icontest | pet hit: %s"):format(f.petSpellID and SpellNameFor(f.petSpellID) or "sample"))
+    end
+end
+
 -- Called for every damage number as it appears.
 function CombatTextPlus:ResolveSpellIcon(f, amount, unit)
     f.icon:Hide()
@@ -1607,6 +1851,11 @@ function CombatTextPlus:ResolveSpellIcon(f, amount, unit)
 
     if unit == "preview" then
         ApplySpellIcon(f, AUTO_ATTACK_ID or 6603)
+        return
+    end
+
+    if f.petSpellID and ApplySpellIcon(f, f.petSpellID) then
+        IconTestPrint(f, SpellNameFor(f.petSpellID) .. " (pet)")
         return
     end
 
@@ -1635,6 +1884,304 @@ function CombatTextPlus:ResolveSpellIcon(f, amount, unit)
         IconTestPrint(f, SpellNameFor(guess) .. " (best guess)")
     else
         IconTestPrint(f, f.amountSecret and "no icon (amount hidden by Blizzard)" or "no icon (damage meter not available)")
+    end
+end
+
+------------------------------------------------------------
+-- Number Styles: Neon, Comic, Glitch, Elemental
+--
+-- Every style only adds layers around the number (copies of the text, a
+-- glow, a starburst, particles). The number itself is never read, measured,
+-- or changed, so styles work on amounts Blizzard hides too. Copies of a
+-- hidden number are made with SetText, which the game allows.
+-- Textures are our own, in Media\Textures.
+------------------------------------------------------------
+local TEX_PATH = "Interface\\AddOns\\" .. ADDON_FOLDER .. "\\Media\\Textures\\"
+local TEX_GLOW = TEX_PATH .. "CTP_Glow"
+local TEX_BURST = TEX_PATH .. "CTP_Burst"
+local TEX_SPARK = TEX_PATH .. "CTP_Spark"
+local TEX_SPARKLE = TEX_PATH .. "CTP_Sparkle"
+
+-- Comic crit words. Every crit can use the general list. Crits that keep
+-- their school (Crit Color set to Damage Type Color) also have a 50% chance
+-- to use a word that fits the school.
+local COMIC_WORDS = {
+    -- Classic comic
+    "POW!", "BAM!", "WHAM!", "ZAP!", "BOOM!", "KAPOW!", "CRACK!", "SMASH!", "THWACK!",
+    "BIFF!", "SOCK!", "KRAK!", "WHACK!", "ZOWIE!", "BLAM!", "THUD!", "OOF!",
+    -- WoW flavored
+    "CRIT!", "OWNED!", "REKT!", "WRECKED!", "BONK!",
+}
+local COMIC_SCHOOL_WORDS = {
+    physical = { "SLASH!", "CLANG!", "STAB!", "CHOP!" },
+    fire     = { "SIZZLE!", "FWOOSH!", "SCORCH!", "BLAZE!" },
+    frost    = { "CRUNCH!", "SHATTER!", "CRACKLE!", "BRRR!" },
+    shadow   = { "HISS!", "SHRIEK!", "GLOOM!", "DREAD!" },
+    nature   = { "THWIP!", "SNAP!", "ZZZAP!", "STING!" },
+    arcane   = { "ZING!", "FZZT!", "POOF!", "WHOOSH!" },
+    holy     = { "SMITE!", "SHINE!", "BEHOLD!", "JUDGED!" },
+    chaos    = { "DOOM!", "RAAAH!", "FEL!", "RUIN!" },
+}
+
+local function PickComicWord(damageType)
+    local schoolWords = COMIC_SCHOOL_WORDS[damageType]
+    if schoolWords and math.random() < 0.5 then
+        return schoolWords[math.random(#schoolWords)]
+    end
+    return COMIC_WORDS[math.random(#COMIC_WORDS)]
+end
+local MAX_COPIES, MAX_PARTS = 4, 7
+
+-- What each school does in Elemental.
+--   kind: "rise" (embers, drift up), "twinkle" (sparkles in place),
+--         "wisp" (soft smoke, drift up and grow), "fall" (leaves, drift down),
+--         "pulse" (glow pulses, a few sparkles)
+local ELEMENTS = {
+    fire     = { kind = "rise",    tex = TEX_SPARK,   count = 7, glow = 0.35, colors = { {1, 0.55, 0.1}, {1, 0.8, 0.2}, {1, 0.3, 0.05} } },
+    chaos    = { kind = "rise",    tex = TEX_SPARK,   count = 7, glow = 0.35, colors = { {0.6, 1, 0.15}, {0.8, 1, 0.3}, {0.3, 0.9, 0.1} } },
+    frost    = { kind = "twinkle", tex = TEX_SPARKLE, count = 6, glow = 0.30, colors = { {0.8, 0.95, 1}, {1, 1, 1}, {0.55, 0.85, 1} } },
+    arcane   = { kind = "twinkle", tex = TEX_SPARKLE, count = 6, glow = 0.30, colors = { {1, 0.6, 1}, {1, 0.85, 1}, {0.8, 0.5, 1} } },
+    shadow   = { kind = "wisp",    tex = TEX_GLOW,    count = 5, glow = 0.25, colors = { {0.55, 0.3, 0.95}, {0.4, 0.15, 0.7} } },
+    nature   = { kind = "fall",    tex = TEX_SPARK,   count = 6, glow = 0.25, colors = { {0.35, 0.95, 0.3}, {0.6, 1, 0.35}, {0.2, 0.7, 0.2} } },
+    heal     = { kind = "rise",    tex = TEX_SPARKLE, count = 5, glow = 0.30, colors = { {0.4, 1, 0.5}, {0.8, 1, 0.8} } },
+    holy     = { kind = "pulse",   tex = TEX_SPARKLE, count = 4, glow = 0.45, colors = { {1, 0.9, 0.4}, {1, 1, 0.75} } },
+    physical = { kind = "rise",    tex = TEX_SPARK,   count = 4, glow = 0.0,  colors = { {0.85, 0.85, 0.85}, {0.65, 0.65, 0.65} } },
+}
+
+local function GetFx(f)
+    if f.fx then return f.fx end
+    local fx = { copies = {}, parts = {} }
+    fx.glow = f:CreateTexture(nil, "BACKGROUND")
+    fx.glow:SetTexture(TEX_GLOW)
+    fx.glow:SetBlendMode("ADD")
+    fx.burst = f:CreateTexture(nil, "BORDER")
+    fx.burst:SetTexture(TEX_BURST)
+    fx.burst2 = f:CreateTexture(nil, "BORDER", nil, 1)
+    fx.burst2:SetTexture(TEX_BURST)
+    -- Every font string gets a starting font right away. The game errors if
+    -- text is set on a font string that has never had one.
+    for i = 1, MAX_COPIES do
+        fx.copies[i] = f:CreateFontString(nil, "ARTWORK")
+        fx.copies[i]:SetFontObject(GameFontNormal)
+    end
+    for i = 1, MAX_PARTS do
+        local t = f:CreateTexture(nil, "BORDER", nil, 2)
+        t:SetBlendMode("ADD")
+        fx.parts[i] = t
+    end
+    fx.word = f:CreateFontString(nil, "OVERLAY")
+    fx.word:SetFontObject(GameFontNormal)
+    f.fx = fx
+    fx.glow:Hide(); fx.burst:Hide(); fx.burst2:Hide(); fx.word:Hide()
+    for i = 1, MAX_COPIES do fx.copies[i]:Hide() end
+    for i = 1, MAX_PARTS do fx.parts[i]:Hide() end
+    return fx
+end
+
+-- Where the middle of the number roughly is, without measuring it. A
+-- hidden number is laid out against the frame's center (see
+-- LayoutTextPieces), so its middle is estimated from the font size.
+local function NumberCenter(f)
+    local point, x, y = f.textPoint or "CENTER", f.textX or 0, f.textY or 0
+    local half = (f.fontSize or 24) * 1.5
+    if point == "RIGHT" then return x - half, y end
+    if point == "LEFT" then return x + half, y end
+    return x, y
+end
+
+local function MirrorText(f, copy, dx, dy)
+    local point = f.textPoint or "CENTER"
+    copy:ClearAllPoints()
+    copy:SetPoint(point, f, "CENTER", (f.textX or 0) + dx, (f.textY or 0) + dy)
+end
+
+local function Lighten(r, g, b, amt)
+    return r + (1 - r) * amt, g + (1 - g) * amt, b + (1 - b) * amt
+end
+
+-- Sets up a number's style when it first appears.
+function CombatTextPlus:ApplyNumberStyle(f, value, r, g, b, fontPath)
+    local style = db.profile.numberStyle or "classic"
+    local t = f.damageType
+    if style == "classic" or t == "miss" or t == "avoid"
+        or (db.profile.numberStyleCritsOnly and not f.isCrit) then
+        if f.fx then f.fxMode = nil end
+        return
+    end
+
+    local fx = GetFx(f)
+    local size = f.fontSize or 24
+    f.fxMode = style
+    f.fxSeed = math.random() * 100
+    f.fxNextJitter = 0
+    f.text:SetAlpha(1)
+
+    if style == "neon" then
+        -- Colored copies all around act as a colored outline, the core is
+        -- almost white, and a soft glow sits behind.
+        f.text:SetFont(fontPath, size, "")
+        f.text:SetTextColor(Lighten(r, g, b, 0.7))
+        local o = math.max(1, size * 0.06)
+        local offsets = { { o, 0 }, { -o, 0 }, { 0, o }, { 0, -o } }
+        for i = 1, MAX_COPIES do
+            local c = fx.copies[i]
+            c:SetFont(fontPath, size, "")
+            c:SetTextColor(r, g, b, 1)
+            c:SetText(value)
+            c.dx, c.dy = offsets[i][1], offsets[i][2]
+            c:Show()
+        end
+        fx.glow:SetVertexColor(r, g, b, 0.55)
+        fx.glow:SetSize(size * 4.6, size * 2.2)
+        fx.glow:Show()
+
+    elseif style == "glitch" then
+        -- A red and a cyan copy jitter around the number.
+        local tints = { { 1, 0.15, 0.35 }, { 0.15, 0.9, 1 } }
+        for i = 1, 2 do
+            local c = fx.copies[i]
+            c:SetFont(fontPath, size, "")
+            c:SetTextColor(tints[i][1], tints[i][2], tints[i][3], 0.8)
+            c:SetText(value)
+            c.dx, c.dy = 0, 0
+            c:Show()
+        end
+
+    elseif style == "comic" then
+        f.text:SetFont(fontPath, size, "THICKOUTLINE")
+        if f.isCrit then
+            fx.burst:SetVertexColor(1, 0.86, 0.15, 1)
+            fx.burst2:SetVertexColor(1, 0.35, 0.12, 1)
+            fx.burst:SetRotation((math.random() - 0.5) * 0.5)
+            fx.burst2:SetRotation((math.random() - 0.5) * 0.7)
+            fx.burst:Show(); fx.burst2:Show()
+            local wordFont = LSM:Fetch("font", "CTP: Bangers", true) or fontPath
+            fx.word:SetFont(wordFont, math.max(10, size * 0.75), "THICKOUTLINE")
+            fx.word:SetTextColor(1, 1, 1, 1)
+            fx.word:SetText(PickComicWord(t))
+            fx.word:Show()
+        end
+
+    elseif style == "elemental" then
+        local e = ELEMENTS[t]
+        f.fxElement = e
+        if e then
+            if e.glow > 0 then
+                local c = e.colors[1]
+                fx.glow:SetVertexColor(c[1], c[2], c[3], e.glow)
+                fx.glow:SetSize(size * 4.2, size * 2.0)
+                fx.glow:Show()
+            end
+            local spread = size * 1.7
+            for i = 1, MAX_PARTS do
+                local p = fx.parts[i]
+                if i <= e.count then
+                    local c = e.colors[(i - 1) % #e.colors + 1]
+                    p:SetTexture(e.tex)
+                    p:SetVertexColor(c[1], c[2], c[3], 1)
+                    p.ox = (math.random() * 2 - 1) * spread
+                    p.oy = (math.random() * 2 - 1) * size * 0.35
+                    p.speed = 0.6 + math.random() * 0.8
+                    p.phase = math.random() * 6.28
+                    p.base = (e.kind == "wisp") and size * (0.7 + math.random() * 0.5)
+                        or (e.kind == "twinkle" or e.kind == "pulse") and size * (0.35 + math.random() * 0.25)
+                        or size * (0.12 + math.random() * 0.12)
+                    p:Show()
+                else
+                    p:Hide()
+                end
+            end
+        end
+    end
+
+    self:UpdateNumberStyle(f, 0)
+end
+
+-- Runs every frame while a styled number is on screen.
+function CombatTextPlus:UpdateNumberStyle(f, progress)
+    local fx, mode = f.fx, f.fxMode
+    if not fx or not mode then return end
+    local size = f.fontSize or 24
+    local cx, cy = NumberCenter(f)
+    local age = GetTime() - (f.startTime or GetTime())
+
+    if mode == "neon" then
+        for i = 1, MAX_COPIES do
+            local c = fx.copies[i]
+            if c:IsShown() then MirrorText(f, c, c.dx, c.dy) end
+        end
+        fx.glow:ClearAllPoints()
+        fx.glow:SetPoint("CENTER", f, "CENTER", cx, cy)
+        -- Gentle flicker, like a neon tube.
+        fx.glow:SetAlpha(0.45 + 0.1 * math.sin(age * 18 + f.fxSeed))
+
+    elseif mode == "glitch" then
+        if age >= (f.fxNextJitter or 0) then
+            f.fxNextJitter = age + 0.05
+            local j = math.max(2, size * 0.12)
+            local a, b = fx.copies[1], fx.copies[2]
+            a.dx, a.dy = -j * (0.4 + math.random()), (math.random() - 0.5) * 2
+            b.dx, b.dy = j * (0.4 + math.random()), (math.random() - 0.5) * 2
+            -- Now and then the whole number flickers.
+            f.text:SetAlpha(math.random() < 0.08 and 0.35 or 1)
+        end
+        MirrorText(f, fx.copies[1], fx.copies[1].dx, fx.copies[1].dy)
+        MirrorText(f, fx.copies[2], fx.copies[2].dx, fx.copies[2].dy)
+
+    elseif mode == "comic" then
+        if fx.burst:IsShown() then
+            -- Quick pop: grows past full size, then settles.
+            local pop = 1
+            if progress < 0.12 then
+                pop = 0.5 + (progress / 0.12) * 0.65
+            elseif progress < 0.22 then
+                pop = 1.15 - ((progress - 0.12) / 0.1) * 0.15
+            end
+            local w, h = size * 5.0 * pop, size * 3.3 * pop
+            fx.burst:SetSize(w, h)
+            fx.burst2:SetSize(w * 0.72, h * 0.72)
+            fx.burst:ClearAllPoints(); fx.burst:SetPoint("CENTER", f, "CENTER", cx, cy)
+            fx.burst2:ClearAllPoints(); fx.burst2:SetPoint("CENTER", f, "CENTER", cx, cy)
+            fx.word:ClearAllPoints()
+            fx.word:SetPoint("CENTER", f, "CENTER", cx, cy + size * 0.95)
+        end
+
+    elseif mode == "elemental" then
+        local e = f.fxElement
+        if not e then return end
+        if fx.glow:IsShown() then
+            fx.glow:ClearAllPoints()
+            fx.glow:SetPoint("CENTER", f, "CENTER", cx, cy)
+            if e.kind == "pulse" then
+                fx.glow:SetAlpha(e.glow * (0.6 + 0.5 * math.sin(age * 9)))
+            end
+        end
+        for i = 1, e.count do
+            local p = fx.parts[i]
+            local x, y, alpha, scale = p.ox, p.oy, 1, 1
+            if e.kind == "rise" then
+                y = y + age * size * 2.2 * p.speed
+                x = x + math.sin(age * 5 + p.phase) * size * 0.15
+                alpha = math.max(0, 1 - age * 0.9 * p.speed)
+            elseif e.kind == "fall" then
+                y = y - age * size * 1.6 * p.speed
+                x = x + math.sin(age * 4 + p.phase) * size * 0.4
+                alpha = math.max(0, 1 - age * 0.8)
+            elseif e.kind == "wisp" then
+                y = y + age * size * 1.2 * p.speed
+                x = x + math.sin(age * 2 + p.phase) * size * 0.3
+                scale = 1 + age * 0.8
+                alpha = math.max(0, 0.5 - age * 0.35)
+            else -- twinkle and pulse
+                alpha = 0.35 + 0.65 * math.abs(math.sin(age * 6 * p.speed + p.phase))
+                scale = 0.8 + 0.3 * math.abs(math.sin(age * 4 + p.phase))
+            end
+            local s = p.base * scale
+            p:SetSize(s, s)
+            p:SetAlpha(alpha)
+            p:ClearAllPoints()
+            p:SetPoint("CENTER", f, "CENTER", cx + x, cy + y)
+        end
     end
 end
 
@@ -1692,29 +2239,41 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit, un
     f.amountValue = (not secret) and amount or nil
     f.fontSize = fontSize
 
-    -- Labels anchor to the number's width, so they are skipped for secret numbers.
+    -- Labels show on hidden (secret) amounts too. The label comes from the
+    -- damage school, and LayoutTextPieces places it without using the
+    -- hidden number's width.
     local labelText = self:GetDamageTypeLabel(damageType)
     if f.isCrit and damageType ~= "crit" and db.profile.critLabel then
         labelText = (labelText ~= "") and (labelText .. " Crit") or "Crit"
     end
-    if db.profile.showLabels and not secret and labelText ~= "" then
+    if db.profile.showLabels and labelText ~= "" then
         local lR, lG, lB = self:GetLabelColor(damageType)
         f.label:SetTextColor(lR, lG, lB)
         f.label:SetText(labelText)
+        f.label:Show()
+    elseif db.profile.showLabels and damageType == "restricted" and self:SetHiddenSchoolLabel(f) then
+        local c = db.profile.restrictedColor
+        f.label:SetTextColor(c.r, c.g, c.b)
         f.label:Show()
     else
         f.label:Hide()
     end
 
+    self:ApplyPetTag(f, unit)
     self:ResolveSpellIcon(f, amount, unit)
     LayoutTextPieces(f)
 
+    if f.isPetHit and db.profile.colorPetNumbers then
+        local c = db.profile.petNumberColor
+        dR, dG, dB = c.r, c.g, c.b
+    end
     f.text:SetTextColor(dR, dG, dB)
     if secret then
         f.text:SetText(amount)
     else
         f.text:SetText(shownText)
     end
+    self:ApplyNumberStyle(f, secret and amount or shownText, dR, dG, dB, fontPath)
 
     f.bumpY, f.bumpTarget = 0, 0
     f.lineH = fontSize * (db.profile.lineSpacing or 1.1)
@@ -1745,6 +2304,9 @@ function CombatTextPlus:DisplayCombatText(anchor, amount, damageType, isCrit, un
             end
         end
         CombatTextPlus:PlaceFrame(selfFrame, progress, stackIndex, stackCount, elapsed)
+        if selfFrame.fxMode then
+            CombatTextPlus:UpdateNumberStyle(selfFrame, progress)
+        end
     end)
 end
 
@@ -1754,7 +2316,12 @@ end
 -- mobs you never targeted: are you in combat and on its threat table?
 -- This drops other players' hits on mobs you never touched, like a dummy
 -- someone else is attacking.
+local AOE_WINDOW = 1.0 -- seconds after your harmful cast that AoE hits on untargeted enemies count
+
 function CombatTextPlus:IsFightingUnit(unit, plate)
+    if plate and RefreshAutoAttackTarget(plate) then
+        return true
+    end
     if IsPlateEngaged(plate) then
         return true
     end
@@ -1791,17 +2358,40 @@ function CombatTextPlus:IsFightingUnit(unit, plate)
         return false
     end
 
+    -- Hidden threat used to count as "yours". In Midnight that meant every
+    -- enemy in combat showed everyone's hits, so hidden now means no.
     local threat = UnitThreatSituation("player", unit)
-    if IsSecret(threat) then
-        -- Threat is hidden here, so being in combat is the best check left.
+    if IsSecret(threat) or threat == nil then
+        return false
+    end
+
+    -- Solo, being on the threat table is a good sign the enemy is yours.
+    if not IsInGroup() then
         return true
     end
-    return threat ~= nil
+
+    -- In a group you end up on the threat table of nearly every enemy in the
+    -- pull (heals and buffs add threat to all of them), so the table alone
+    -- lets in your whole group's damage. An enemy you never targeted only
+    -- counts while you are actually casting: a harmful spell in the last
+    -- second, or a channel in progress. That keeps your own AoE and drops
+    -- the rest of the group's hits between your casts.
+    if (GetTime() - lastHarmfulCastAt) <= AOE_WINDOW then
+        return true
+    end
+    local channel = UnitChannelInfo("player")
+    if channel and not IsSecret(channel) then
+        return true
+    end
+    return false
 end
 
 -- Same idea as IsFightingUnit, for your current target in the center
 -- display. Works whether or not the target has a nameplate.
 function CombatTextPlus:IsFightingTarget()
+    if RefreshAutoAttackTarget(nil) then
+        return true
+    end
     local now = GetTime()
     local timeout = db.profile.engageTimeout or 6
     if targetEngagedAt > 0 and (timeout <= 0 or (now - targetEngagedAt) <= timeout) then
@@ -1818,7 +2408,26 @@ end
 
 -- Decides whether a heal on a friendly nameplate should show. Same source
 -- problem as damage: the event never says who cast the heal.
+-- Classes that can heal someone besides themselves, so healing numbers can
+-- show on a nameplate: healers, plus Hunters (Mend Pet) and Warlocks
+-- (Health Funnel) healing their pets. Self heals never show, since your
+-- own character has no nameplate. Other classes never see healing options.
+local HEALING_CLASSES = {
+    PRIEST = true, PALADIN = true, SHAMAN = true, DRUID = true,
+    MONK = true, EVOKER = true, HUNTER = true, WARLOCK = true,
+}
+
+local function ClassCanHealOthers()
+    local _, class = UnitClass("player")
+    if not class or IsSecret(class) then return true end -- unknown: show everything
+    return HEALING_CLASSES[class] or false
+end
+
 function CombatTextPlus:IsHealAllowed(unit, plate)
+    -- Classes that cannot heal others never show heal numbers. Otherwise a
+    -- buff like Arcane Intellect would mark that player, and other healers'
+    -- heals on them would show up.
+    if not ClassCanHealOthers() then return false end
     local scope = db.profile.healScope or "auto"
 
     -- Auto: healer specs see their group, everyone else only their own heals
@@ -1886,6 +2495,42 @@ function CombatTextPlus:ApplyColorPreset()
         registry:NotifyChange("CombatTextPlus")
     end
     self:Print("Default color preset applied.")
+end
+
+-- Some abilities (Cat and Bear form attacks among them) arrive with the
+-- damage school hidden, so we cannot pick a label from our own list. The
+-- game can still turn the hidden school into its name, and a hidden name
+-- can be shown on a label without the addon ever reading it. Everything is
+-- wrapped in pcall: if the game refuses, the hit simply shows no label,
+-- same as before.
+function CombatTextPlus:SetHiddenSchoolLabel(f)
+    local mask = pendingSchoolMask
+    local getName = C_Spell and C_Spell.GetSchoolString
+    local function Report(msg)
+        if debugMode then
+            local form = GetShapeshiftFormID and GetShapeshiftFormID()
+            self:Print(("label | form %s | school %s | %s"):format(
+                (form == nil and "none") or (IsSecret(form) and "[secret]") or tostring(form),
+                (IsSecret(mask) and "[secret]") or tostring(mask), msg))
+        end
+    end
+    if not getName then Report("no GetSchoolString in this client") return false end
+    if not IsSecret(mask) and mask == nil then Report("no school sent with the hit") return false end
+    local ok, name = pcall(getName, mask)
+    if not ok then Report("game would not name it: " .. tostring(name)) return false end
+    if not IsSecret(name) and (type(name) ~= "string" or name == "") then
+        Report("game returned no name")
+        return false
+    end
+    if f.isCrit and db.profile.critLabel then
+        if pcall(f.label.SetFormattedText, f.label, "%s Crit", name) then
+            Report("label set (crit)")
+            return true
+        end
+    end
+    local set, err = pcall(f.label.SetText, f.label, name)
+    Report(set and ("label set" .. (IsSecret(name) and " (hidden name)" or (": " .. name))) or ("label refused: " .. tostring(err)))
+    return set and true or false
 end
 
 function CombatTextPlus:GetDamageTypeLabel(damageType)
@@ -1993,7 +2638,9 @@ function CombatTextPlus:HandleCenterTarget(action, flagText, amount, schoolMask)
         self:Print(("center | SHOWN as %s%s"):format(damageType, isCrit and " (crit)" or ""))
     end
     PositionCenterAnchor()
+    pendingSchoolMask = schoolMask
     self:DisplayCombatText(GetCenterAnchor(), amount, damageType, isCrit, "target")
+    pendingSchoolMask = nil
 end
 
 function CombatTextPlus:HandleSelfAvoidance(action)
@@ -2112,8 +2759,8 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
                     return tostring(v)
                 end
                 local engaged = stamp and ("%.1fs ago (timeout %ds)"):format(GetTime() - stamp, db.profile.engageTimeout or 6) or "never"
-                self:Print(("%s | HIDDEN by Only Enemies I'm Fighting | last attack: %s | your debuff on it: %s | strict: %s | in combat: %s | threat: %s"):format(
-                    unit, engaged, PlayerHasDebuffOn(unit) and "yes" or "no", tostring(db.profile.strictEngage),
+                self:Print(("%s | HIDDEN by Only Enemies I'm Fighting | last attack: %s | auto attack: %s | your debuff on it: %s | strict: %s | in combat: %s | threat: %s"):format(
+                    unit, engaged, IsAutoAttacking() and "on" or "off", PlayerHasDebuffOn(unit) and "yes" or "no", tostring(db.profile.strictEngage),
                     Show(UnitAffectingCombat("player")), Show(UnitThreatSituation("player", unit))))
             end
             return
@@ -2157,7 +2804,9 @@ function CombatTextPlus:HandleUnitCombat(unit, action, flagText, amount, schoolM
     if DebugWants(unit) then
         self:Print(("%s | SHOWN as %s%s"):format(unit, damageType, isCrit and " (crit)" or ""))
     end
+    pendingSchoolMask = schoolMask
     self:DisplayCombatText(plate, amount, damageType, isCrit, unit)
+    pendingSchoolMask = nil
 end
 
 ------------------------------------------------------------
@@ -2204,6 +2853,286 @@ function CombatTextPlus:RefreshFonts(onlyType)
     end
 end
 
+------------------------------------------------------------
+-- One Click Looks
+-- A Look is a set of values for the settings that shape how numbers look
+-- and move: font, sizes, animation, Number Style, and crits. Applying one
+-- copies those values into the current profile, just like changing each
+-- option by hand. It never touches colors, filters, positions, Midnight
+-- settings, healing, misses, spell icons, or the Pet tag.
+-- Before the first Look is applied, the settings it changes are saved, so
+-- Undo Look returns to the setup from before you started trying Looks.
+------------------------------------------------------------
+local LOOK_ORDER = {
+    "clean", "classic", "blizzard", "minimal", "bigbold", "precision",
+    "comic", "arcade", "neon", "glitch", "elemental", "fantasy",
+    "horror", "military", "rainbow", "arcane",
+}
+local LOOKS = {
+    clean = {
+        name = "Clean",
+        desc = "Modern and quiet. Bebas Neue, a simple fade, no labels, and crits in their school color with a quick pop.",
+        font = "CTP: Bebas Neue", fontSize = 24, labelFontSize = 13, showLabels = false,
+        animationStyle = "fade", animationEasing = "quadratic", scrollDuration = 1.5, speedFactor = 1.0, maxYOffset = 90,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.5, critAnimation = "pop",
+        lineSpacing = 1.05, maxPerPlate = 6,
+    },
+    classic = {
+        name = "Classic",
+        desc = "The old school scrolling text feel. Game font, numbers rise straight up, labels on, and big red crits.",
+        font = "Friz Quadrata TT", fontSize = 24, labelFontSize = 14, showLabels = true,
+        animationStyle = "off", animationEasing = "linear", scrollDuration = 1.5, speedFactor = 1.0, maxYOffset = 100,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "crit", critSizeMultiplier = 2.0, critAnimation = "same",
+        lineSpacing = 1.1, maxPerPlate = 8,
+    },
+    blizzard = {
+        name = "Blizzard Style",
+        desc = "Close to the game's own combat text. Numbers arc out to the sides and crits pop.",
+        font = "Friz Quadrata TT", fontSize = 26, labelFontSize = 14, showLabels = false,
+        animationStyle = "arc", animationEasing = "quadratic", scrollDuration = 1.4, speedFactor = 1.0, maxYOffset = 90,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "crit", critSizeMultiplier = 1.6, critAnimation = "same",
+        lineSpacing = 1.1, maxPerPlate = 8,
+    },
+    comic = {
+        name = "Comic",
+        desc = "Comic book fun. Bangers font, arcing numbers, and crits bounce out with a starburst and a POW!, BAM!, or WHAM!",
+        font = "CTP: Bangers", fontSize = 26, labelFontSize = 14, showLabels = false,
+        animationStyle = "arc", animationEasing = "quadratic", scrollDuration = 1.6, speedFactor = 1.0, maxYOffset = 100,
+        numberStyle = "comic", numberStyleCritsOnly = true,
+        critColorMode = "school", critSizeMultiplier = 2.0, critAnimation = "bounce",
+        lineSpacing = 1.1, maxPerPlate = 6,
+    },
+    arcade = {
+        name = "Arcade",
+        desc = "Retro game vibes. Pixel font, bouncing neon numbers, and pulsing crits.",
+        font = "CTP: Press Start 2P", fontSize = 18, labelFontSize = 11, showLabels = false,
+        animationStyle = "bounce", animationEasing = "linear", scrollDuration = 1.5, speedFactor = 1.0, maxYOffset = 100,
+        numberStyle = "neon", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.8, critAnimation = "pulse",
+        lineSpacing = 1.2, maxPerPlate = 6,
+    },
+    elemental = {
+        name = "Elemental",
+        desc = "Every school shows off. Titan One font, embers, frost sparkles, shadow wisps, and big school colored crits.",
+        font = "CTP: Titan One", fontSize = 24, labelFontSize = 13, showLabels = true,
+        animationStyle = "fade", animationEasing = "quadratic", scrollDuration = 1.8, speedFactor = 0.9, maxYOffset = 110,
+        numberStyle = "elemental", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 2.0, critAnimation = "pop",
+        lineSpacing = 1.1, maxPerPlate = 6,
+    },
+    bigbold = {
+        name = "Big & Bold",
+        desc = "Easy to read from across the room. Tall Anton numbers, a straight rise, and crits that pop big.",
+        font = "CTP: Anton", fontSize = 30, labelFontSize = 15, showLabels = true,
+        animationStyle = "off", animationEasing = "quadratic", scrollDuration = 1.6, speedFactor = 1.0, maxYOffset = 110,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.7, critAnimation = "pop",
+        lineSpacing = 1.05, maxPerPlate = 6,
+    },
+    precision = {
+        name = "Precision",
+        desc = "Clean and sharp, for players who want numbers to read like data. Russo One, a smooth fade, and crits that scale up.",
+        font = "CTP: Russo One", fontSize = 22, labelFontSize = 12, showLabels = true,
+        animationStyle = "fade", animationEasing = "exponential", scrollDuration = 1.4, speedFactor = 1.0, maxYOffset = 90,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.6, critAnimation = "scale",
+        lineSpacing = 1.05, maxPerPlate = 6,
+    },
+    neon = {
+        name = "Neon Nights",
+        desc = "Glowing sign style. Audiowide font, every number glows in its school color, and crits arc out with a pulse.",
+        font = "CTP: Audiowide", fontSize = 22, labelFontSize = 12, showLabels = false,
+        animationStyle = "fade", animationEasing = "quadratic", scrollDuration = 1.6, speedFactor = 1.0, maxYOffset = 100,
+        numberStyle = "neon", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.8, critAnimation = "arc",
+        lineSpacing = 1.15, maxPerPlate = 6,
+    },
+    glitch = {
+        name = "Glitch",
+        desc = "Broken screen cyberpunk. Zen Dots font, red and cyan jitter on every hit, and crits that shake.",
+        font = "CTP: Zen Dots", fontSize = 20, labelFontSize = 11, showLabels = false,
+        animationStyle = "fade", animationEasing = "linear", scrollDuration = 1.4, speedFactor = 1.0, maxYOffset = 90,
+        numberStyle = "glitch", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.8, critAnimation = "shake",
+        lineSpacing = 1.15, maxPerPlate = 6,
+    },
+    fantasy = {
+        name = "Fantasy",
+        desc = "Old world adventure. Pirata One font, numbers sweep over in a rainbow arch, labels on, and crits pop.",
+        font = "CTP: Pirata One", fontSize = 26, labelFontSize = 15, showLabels = true,
+        animationStyle = "rainbow_lr", animationEasing = "quadratic", scrollDuration = 1.8, speedFactor = 1.0, maxYOffset = 90,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.8, critAnimation = "pop",
+        lineSpacing = 1.1, maxPerPlate = 6,
+    },
+    horror = {
+        name = "Horror",
+        desc = "Spooky season all year. Creepster font, slow fades, and crits that shake like something is wrong.",
+        font = "CTP: Creepster", fontSize = 26, labelFontSize = 14, showLabels = false,
+        animationStyle = "fade", animationEasing = "exponential", scrollDuration = 2.0, speedFactor = 0.9, maxYOffset = 100,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 2.0, critAnimation = "shake",
+        lineSpacing = 1.1, maxPerPlate = 6,
+    },
+    military = {
+        name = "Military",
+        desc = "Stamped and tactical. Black Ops One stencil font, a fast straight rise, and big red crits that bounce.",
+        font = "CTP: Black Ops One", fontSize = 24, labelFontSize = 13, showLabels = true,
+        animationStyle = "off", animationEasing = "linear", scrollDuration = 1.3, speedFactor = 1.1, maxYOffset = 100,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "crit", critSizeMultiplier = 1.8, critAnimation = "bounce",
+        lineSpacing = 1.1, maxPerPlate = 8,
+    },
+    rainbow = {
+        name = "Rainbow",
+        desc = "Pure fun. Bungee font, numbers sail over in a rainbow arch, and crits glow neon.",
+        font = "CTP: Bungee", fontSize = 22, labelFontSize = 12, showLabels = false,
+        animationStyle = "rainbow_rl", animationEasing = "quadratic", scrollDuration = 1.7, speedFactor = 1.0, maxYOffset = 100,
+        numberStyle = "neon", numberStyleCritsOnly = true,
+        critColorMode = "school", critSizeMultiplier = 1.8, critAnimation = "same",
+        lineSpacing = 1.1, maxPerPlate = 6,
+    },
+    arcane = {
+        name = "Arcane",
+        desc = "Magic in the air. Zen Dots font, numbers ripple as they fade, sparkles and embers from Elemental, and crits that spiral out.",
+        font = "CTP: Zen Dots", fontSize = 20, labelFontSize = 11, showLabels = true,
+        animationStyle = "ripple", animationEasing = "quadratic", scrollDuration = 1.8, speedFactor = 0.9, maxYOffset = 100,
+        numberStyle = "elemental", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.8, critAnimation = "spiral_out",
+        lineSpacing = 1.15, maxPerPlate = 6,
+    },
+    minimal = {
+        name = "Minimal",
+        desc = "Built for raids and busy fights. Smaller numbers, a short fade, no labels, and at most 4 numbers per nameplate.",
+        font = "Friz Quadrata TT", fontSize = 18, labelFontSize = 12, showLabels = false,
+        animationStyle = "fade", animationEasing = "linear", scrollDuration = 1.2, speedFactor = 1.0, maxYOffset = 70,
+        numberStyle = "classic", numberStyleCritsOnly = false,
+        critColorMode = "school", critSizeMultiplier = 1.4, critAnimation = "same",
+        lineSpacing = 1.0, maxPerPlate = 4,
+    },
+}
+
+-- The settings a Look may change (damageTypeFontSizes is handled separately).
+local LOOK_KEYS = {
+    "font", "fontSize", "labelFontSize", "showLabels",
+    "animationStyle", "animationEasing", "scrollDuration", "speedFactor", "maxYOffset",
+    "numberStyle", "numberStyleCritsOnly",
+    "critColorMode", "critSizeMultiplier", "critAnimation",
+    "lineSpacing", "maxPerPlate",
+}
+
+local NUMBER_STYLE_NAMES = { classic = "Classic", neon = "Neon", comic = "Comic", glitch = "Glitch", elemental = "Elemental" }
+
+-- Builds a Look's tooltip: what it is, then exactly what it sets.
+local function LookTooltip(look)
+    local function anim(key)
+        if key == "same" then return "Same as normal hits" end
+        return ANIMATION_STYLES[key] or key
+    end
+    local font = (look.font or ""):gsub("^CTP: ", "")
+    local style = NUMBER_STYLE_NAMES[look.numberStyle] or look.numberStyle
+    if look.numberStyle ~= "classic" and look.numberStyleCritsOnly then style = style .. " (crits only)" end
+    local critColor = (look.critColorMode == "school") and "Damage type color" or "Crit color (red)"
+    local lines = {
+        look.desc,
+        "",
+        "|cffffd100Font:|r " .. font .. ", size " .. look.fontSize,
+        "|cffffd100Animation:|r " .. anim(look.animationStyle) .. ", " .. look.scrollDuration .. "s",
+        "|cffffd100Number Style:|r " .. style,
+        "|cffffd100Labels:|r " .. (look.showLabels and "On" or "Off"),
+        "|cffffd100Crits:|r " .. critColor .. ", " .. look.critSizeMultiplier .. "x, " .. anim(look.critAnimation),
+        "|cffffd100Max per nameplate:|r " .. look.maxPerPlate,
+        "",
+        "|cff888888Colors, filters, and positions stay the same. Undo Look brings back your old setup.|r",
+    }
+    return table.concat(lines, "\n")
+end
+
+local function BuildLookButtons(args)
+    for i, key in ipairs(LOOK_ORDER) do
+        local look = LOOKS[key]
+        args["look_" .. key] = {
+            name = look.name,
+            type = "execute",
+            width = "normal",
+            desc = LookTooltip(look),
+            confirm = true,
+            confirmText = ("Apply the %s Look? Your font, sizes, animation, Number Style, and crit settings will change. Colors, filters, and positions stay the same."):format(look.name),
+            func = function() CombatTextPlus:ApplyLook(key) end,
+            order = 10 + i,
+        }
+    end
+end
+
+local function CopyTable(t)
+    local out = {}
+    for k, v in pairs(t) do out[k] = (type(v) == "table") and CopyTable(v) or v end
+    return out
+end
+
+local function RefreshAfterLook()
+    ReleaseAll()
+    CombatTextPlus:RefreshFonts()
+    local registry = LibStub("AceConfigRegistry-3.0", true)
+    if registry then registry:NotifyChange("CombatTextPlus") end
+end
+
+function CombatTextPlus:ApplyLook(key)
+    local look = LOOKS[key]
+    if not look then
+        self:Print("Unknown Look. Choose: " .. table.concat(LOOK_ORDER, ", ") .. ".")
+        return
+    end
+    local profile = db.profile
+
+    -- Save the current setup once, so Undo can bring it back.
+    if not profile.lookUndo then
+        local saved = { damageTypeFontSizes = CopyTable(profile.damageTypeFontSizes) }
+        for _, k in ipairs(LOOK_KEYS) do saved[k] = profile[k] end
+        profile.lookUndo = saved
+    end
+
+    for _, k in ipairs(LOOK_KEYS) do
+        if look[k] ~= nil then profile[k] = look[k] end
+    end
+
+    -- Bundled fonts may be missing if the Media folder was not installed.
+    if not LSM:IsValid("font", profile.font) then
+        profile.font = "Friz Quadrata TT"
+    end
+
+    -- Every damage type uses the Look's size; crits (in Crit Color mode)
+    -- use it times the crit size.
+    for t in pairs(profile.damageTypeFontSizes) do
+        profile.damageTypeFontSizes[t] = look.fontSize
+    end
+    profile.damageTypeFontSizes.crit = math.floor(look.fontSize * look.critSizeMultiplier + 0.5)
+
+    profile.lookName = key
+    RefreshAfterLook()
+    self:Print(("Look applied: %s. Use Undo Look to go back."):format(look.name))
+    self:ShowPreviewCombatText()
+end
+
+function CombatTextPlus:UndoLook()
+    local saved = db.profile.lookUndo
+    if not saved then
+        self:Print("Nothing to undo.")
+        return
+    end
+    for _, k in ipairs(LOOK_KEYS) do db.profile[k] = saved[k] end
+    if saved.damageTypeFontSizes then
+        db.profile.damageTypeFontSizes = CopyTable(saved.damageTypeFontSizes)
+    end
+    db.profile.lookUndo = nil
+    db.profile.lookName = nil
+    RefreshAfterLook()
+    self:Print("Your previous setup is restored.")
+end
+
 function CombatTextPlus:SlashCommand(input)
     input = strtrim(input or ""):lower()
     if input == "status" then
@@ -2213,6 +3142,15 @@ function CombatTextPlus:SlashCommand(input)
             tostring(db.profile.enabled), tostring(IsRestrictedContext()), tracked, tostring(issecretvalue ~= nil)))
     elseif input == "preview" then
         self:ShowPreviewCombatText()
+    elseif input == "look" or input:find("^look ") then
+        local which = strtrim(input:sub(5))
+        if which == "undo" then
+            self:UndoLook()
+        elseif which == "" then
+            self:Print("Usage: /ctp look <" .. table.concat(LOOK_ORDER, ", ") .. ", undo>")
+        else
+            self:ApplyLook(which)
+        end
     elseif input == "colors" then
         self:ApplyColorPreset()
     elseif input == "metertest" then
@@ -2262,14 +3200,21 @@ local function TypeNames(t)
     return L .. " Damage", L .. " Damage Color", L .. " Damage Font Size", L .. " Label Color", L .. " Offset", L .. " damage"
 end
 
+local function HideHealingOptions()
+    return not ClassCanHealOthers()
+end
+
 local function BuildOptions()
     local offsetArgs, filterArgs, colorArgs, labelColorArgs, fontSizeArgs = {}, {}, {}, {}, {}
 
     for i, t in ipairs(DAMAGE_TYPES) do
         local filterName, colorName, fontName, labelColorName, offsetName, noun = TypeNames(t)
 
+        local hideThis = (t == "heal") and HideHealingOptions or nil
+
         if t ~= "crit" then
             offsetArgs[t] = {
+                hidden = hideThis,
                 name = offsetName, type = "range", min = -50, max = 50, step = 1, order = i,
                 desc = "Adjust the horizontal movement of the combat text for " .. noun .. ".",
                 get = function() return db.profile.damageTypeOffsets[t] end,
@@ -2278,6 +3223,7 @@ local function BuildOptions()
         end
 
         filterArgs[t] = {
+            hidden = hideThis,
             name = filterName, type = "toggle", order = i,
             desc = (t == "crit")
                 and "Give critical hits special treatment (see the Crits section). Turn off to show crits as normal hits."
@@ -2287,6 +3233,7 @@ local function BuildOptions()
         }
 
         colorArgs[t .. "Color"] = {
+            hidden = hideThis,
             name = colorName, type = "color", order = i,
             desc = "Set the color for " .. noun .. ".",
             get = function() local c = db.profile.damageTypeColors[t]; return c.r, c.g, c.b end,
@@ -2294,6 +3241,7 @@ local function BuildOptions()
         }
 
         labelColorArgs[t .. "LabelColor"] = {
+            hidden = hideThis,
             name = labelColorName, type = "color", order = i,
             desc = "Set the color of the '" .. TYPE_LABELS[t] .. "' label.",
             get = function() local c = db.profile.labelColors[t]; return c.r, c.g, c.b end,
@@ -2301,6 +3249,7 @@ local function BuildOptions()
         }
 
         fontSizeArgs[t .. "FontSize"] = {
+            hidden = hideThis,
             name = fontName, type = "range", min = 6, max = 36, step = 1, order = i,
             desc = "Set the font size for " .. noun .. ".",
             get = function() return db.profile.damageTypeFontSizes[t] end,
@@ -2325,6 +3274,41 @@ local function BuildOptions()
                     CombatTextPlus:ToggleEnabled(value)
                 end,
                 order = 1,
+            },
+            looks = {
+                name = "One Click Looks",
+                type = "group",
+                inline = true,
+                order = 1.5,
+                args = (function()
+                    local args = {
+                        info = {
+                            type = "description",
+                            name = "Click a Look to change your font, sizes, animation, Number Style, and crits in one go. Hover over any Look to see exactly what it sets. Your colors, filters, and positions are never changed.",
+                            order = 0,
+                        },
+                        lastApplied = {
+                            type = "description",
+                            fontSize = "medium",
+                            name = function()
+                                local current = db.profile.lookName and LOOKS[db.profile.lookName]
+                                return current and ("|cffffd100Current Look:|r " .. current.name) or "|cffffd100Current Look:|r none (your own setup)"
+                            end,
+                            order = 1,
+                        },
+                        undo = {
+                            name = "Undo Look",
+                            type = "execute",
+                            width = "normal",
+                            desc = "Go back to your setup from before you started trying Looks. Your font, sizes, animation, Number Style, and crit settings return to what they were.\n\nYou can try as many Looks as you like first. Undo always goes back to the setup you had before the first one.",
+                            func = function() CombatTextPlus:UndoLook() end,
+                            disabled = function() return db.profile.lookUndo == nil end,
+                            order = 100,
+                        },
+                    }
+                    BuildLookButtons(args)
+                    return args
+                end)(),
             },
             midnight = {
                 name = "Midnight Settings",
@@ -2353,7 +3337,7 @@ local function BuildOptions()
                         name = "Only Enemies I'm Fighting",
                         type = "toggle",
                         width = "double",
-                        desc = "Hide damage on enemies you have not attacked. An enemy counts as yours once you target it and cast or auto attack, while one of your damage over time effects is on it, or once you are on its threat table. Stops other players' hits on a dummy or mob you never touched. On enemies you are fighting, other players' hits will still appear.",
+                        desc = "Hide damage on enemies you have not attacked. An enemy counts as yours once you target it and cast or auto attack, or while one of your damage over time effects is on it.\n\nEnemies you never targeted (AoE): solo, they count once you are on their threat table. In a group, they only count right after you cast a harmful spell or while you channel, since heals and buffs put you on every enemy's threat table.\n\nStops other players' hits on a dummy or mob you never touched. On enemies you are fighting, other players' hits will still appear, because Blizzard does not tell addons who dealt the damage.",
                         get = function() return db.profile.onlyMyFights end,
                         set = function(_, value) db.profile.onlyMyFights = value end,
                         order = 2.5,
@@ -2386,6 +3370,7 @@ local function BuildOptions()
                         order = 2.7,
                     },
                     healScope = {
+                        hidden = HideHealingOptions,
                         name = "Show Healing On",
                         type = "select",
                         width = "double",
@@ -2404,6 +3389,7 @@ local function BuildOptions()
                         order = 2.8,
                     },
                     healTimeout = {
+                        hidden = HideHealingOptions,
                         name = "Heal Timeout (seconds)",
                         type = "range",
                         desc = "How long a friendly stays yours after your last helpful spell on it. Long enough by default to cover heal over time effects. Set to 0 to keep them until they leave your screen.",
@@ -2413,6 +3399,7 @@ local function BuildOptions()
                         order = 2.9,
                     },
                     friendlyNPCPlates = {
+                        hidden = HideHealingOptions,
                         name = "Show Friendly NPC Nameplates",
                         type = "toggle",
                         width = "double",
@@ -2548,6 +3535,15 @@ local function BuildOptions()
                 set = function(_, value) db.profile.scrollDuration = value end,
                 order = 2,
             },
+            startXOffset = {
+                name = "Start X Offset",
+                type = "range",
+                desc = "Where numbers start, left or right of the nameplate's center. Positive moves right, negative moves left. 0 is the original spot.",
+                min = -200, max = 200, step = 5,
+                get = function() return db.profile.startXOffset end,
+                set = function(_, value) db.profile.startXOffset = value end,
+                order = 2.85,
+            },
             startYOffset = {
                 name = "Start Y Offset",
                 type = "range",
@@ -2613,7 +3609,7 @@ local function BuildOptions()
             showLabels = {
                 name = "Show Labels",
                 type = "toggle",
-                desc = "Show or hide damage type labels (for example Fire, Frost, Heal). Labels are hidden on numbers Blizzard marks as restricted.",
+                desc = "Show or hide damage type labels (for example Fire, Frost, Heal). Numbers whose damage school Blizzard hides have no label.",
                 get = function() return db.profile.showLabels end,
                 set = function(_, value)
                     db.profile.showLabels = value
@@ -2648,6 +3644,102 @@ local function BuildOptions()
                 set = function(_, value) db.profile.spellIconSize = value end,
                 disabled = function() return not db.profile.showSpellIcons end,
                 order = 9.3,
+            },
+            petTag = {
+                name = "Pet Tag",
+                type = "group",
+                inline = true,
+                order = 9.6,
+                args = {
+                    info = {
+                        type = "description",
+                        name = "Shows which hits came from your pet. Works for any class with a pet: Hunter, Warlock, Frost Mage, Unholy Death Knight, and more.\n\n|cff888888Pet abilities (Firebolt, Claw, Bite, Legion Strike...) can be tagged. Plain pet auto attacks look exactly like your own hits, so they are not tagged.|r",
+                        order = 0,
+                    },
+                    showPetTag = {
+                        name = "Show Pet Tag",
+                        type = "toggle",
+                        width = "full",
+                        desc = "Tag your pet's ability hits so you can tell them apart from your own.\n\n|cffffd100How it works:|r when your pet uses an ability, the game reports it. The next hit on the enemy your pet is attacking, within 0.8 seconds, gets the tag. Each ability tags one hit.\n\n|cffffd100Not tagged:|r pet auto attacks, hits where your own cast fits just as well (to avoid wrong tags), and hits in dungeons and raids, where Blizzard hides which enemy is which.\n\n|cffffd100With Show Spell Icons on:|r tagged hits show the pet ability's icon.",
+                        get = function() return db.profile.showPetTag end,
+                        set = function(_, value) db.profile.showPetTag = value end,
+                        order = 1,
+                    },
+                    petTagText = {
+                        name = "Tag Text",
+                        type = "select",
+                        desc = "What the tag says.\n\n|cffffd100Pet's Name|r uses your current pet's name, like \"Fluffy\" or \"Imp\". If the game can't give the name, it falls back to \"Pet\".",
+                        values = {
+                            pet = "Pet",
+                            PET = "PET",
+                            paren = "(Pet)",
+                            bracket = "[Pet]",
+                            name = "Pet's Name",
+                        },
+                        sorting = { "pet", "PET", "paren", "bracket", "name" },
+                        get = function() return db.profile.petTagText end,
+                        set = function(_, value) db.profile.petTagText = value end,
+                        disabled = function() return not db.profile.showPetTag end,
+                        order = 2,
+                    },
+                    petTagPosition = {
+                        name = "Tag Position",
+                        type = "select",
+                        desc = "Put the tag to the left or right of the number. If you also use spell icons or labels, the tag sits on the outside, past them.\n\nOn numbers whose amount Blizzard hides, everything shares one side of the number, so the tag may move next to the icon or label.",
+                        values = { left = "Left of Number", right = "Right of Number" },
+                        sorting = { "left", "right" },
+                        get = function() return db.profile.petTagPosition end,
+                        set = function(_, value) db.profile.petTagPosition = value end,
+                        disabled = function() return not db.profile.showPetTag end,
+                        order = 3,
+                    },
+                    petTagSize = {
+                        name = "Tag Size",
+                        type = "range",
+                        min = 0.6, max = 2.0, step = 0.05,
+                        isPercent = true,
+                        desc = "Tag size compared to your Label Font Size. 100% matches your labels. Raise it to make pet hits easier to spot.",
+                        get = function() return db.profile.petTagSize end,
+                        set = function(_, value) db.profile.petTagSize = value end,
+                        disabled = function() return not db.profile.showPetTag end,
+                        order = 4,
+                    },
+                    petTagColor = {
+                        name = "Tag Color",
+                        type = "color",
+                        desc = "Color of the tag text only. The numbers have their own color below.\n\nA color that isn't used by any damage school (like the default teal) stands out best.",
+                        get = function() local c = db.profile.petTagColor; return c.r, c.g, c.b end,
+                        set = function(_, r, g, b) local c = db.profile.petTagColor; c.r, c.g, c.b = r, g, b end,
+                        disabled = function() return not db.profile.showPetTag end,
+                        order = 5,
+                    },
+                    colorPetNumbers = {
+                        name = "Color Pet Numbers",
+                        type = "toggle",
+                        desc = "Give your pet's numbers their own color (set with Pet Number Color), so you can spot them at a glance without reading the tag.\n\nWhen off, pet numbers use their normal damage school color.\n\nThe tag keeps its Tag Color, and the damage school label (if on) keeps its normal color.",
+                        get = function() return db.profile.colorPetNumbers end,
+                        set = function(_, value) db.profile.colorPetNumbers = value end,
+                        disabled = function() return not db.profile.showPetTag end,
+                        order = 6,
+                    },
+                    petNumberColor = {
+                        name = "Pet Number Color",
+                        type = "color",
+                        desc = "Color of your pet's numbers when Color Pet Numbers is on. This is separate from the Tag Color, so the tag and the numbers can be different colors.\n\nThis also tints Number Style effects (Neon glow, Glitch, Elemental) on pet hits.",
+                        get = function() local c = db.profile.petNumberColor; return c.r, c.g, c.b end,
+                        set = function(_, r, g, b) local c = db.profile.petNumberColor; c.r, c.g, c.b = r, g, b end,
+                        disabled = function() return not (db.profile.showPetTag and db.profile.colorPetNumbers) end,
+                        order = 6.5,
+                    },
+                    petPreview = {
+                        name = "Preview",
+                        type = "execute",
+                        desc = "Play the sample text. The Fire sample shows how a pet hit will look with your current settings.",
+                        func = function() CombatTextPlus:ShowPreviewCombatText() end,
+                        disabled = function() return not db.profile.showPetTag end,
+                        order = 7,
+                    },
+                },
             },
             spellIconGuess = {
                 name = "Best Guess When Unconfirmed",
@@ -2727,6 +3819,31 @@ local function BuildOptions()
                 desc = "Customize the font size for each damage type.",
                 args = fontSizeArgs,
                 order = 15,
+            },
+            numberStyle = {
+                name = "Number Style",
+                type = "select",
+                desc = "Give your numbers some flair. Works on every hit, including amounts Blizzard hides.\n\nClassic: the normal look.\nNeon: glowing colored outline with a soft flicker.\nComic: heavy outline, and crits get a starburst with a POW!, BAM!, or WHAM!\nGlitch: red and cyan copies jitter around the number.\nElemental: each school gets its own effect: Fire embers, Frost sparkles, Shadow wisps, Nature leaves, Holy glow.\n\nTip: pairs well with the CTP fonts, like Audiowide for Neon, Bangers for Comic, Zen Dots for Glitch, and Titan One for Elemental.",
+                values = {
+                    classic = "Classic",
+                    neon = "Neon",
+                    comic = "Comic",
+                    glitch = "Glitch",
+                    elemental = "Elemental",
+                },
+                sorting = { "classic", "neon", "comic", "glitch", "elemental" },
+                get = function() return db.profile.numberStyle end,
+                set = function(_, value) db.profile.numberStyle = value end,
+                order = 15.5,
+            },
+            numberStyleCritsOnly = {
+                name = "Style Crits Only",
+                type = "toggle",
+                desc = "Only crits get the Number Style. Normal hits keep the Classic look, so crits really stand out.",
+                get = function() return db.profile.numberStyleCritsOnly end,
+                set = function(_, value) db.profile.numberStyleCritsOnly = value end,
+                disabled = function() return (db.profile.numberStyle or "classic") == "classic" end,
+                order = 15.6,
             },
             animationStyle = {
                 name = "Animation Style",
@@ -3032,11 +4149,24 @@ function CombatTextPlus:OnInitialize()
     eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
     eventFrame:RegisterEvent("PLAYER_ENTER_COMBAT")
+    eventFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")
+    eventFrame:RegisterEvent("START_AUTOREPEAT_SPELL")
+    eventFrame:RegisterEvent("STOP_AUTOREPEAT_SPELL")
     eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player")
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
     eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
+
+    -- Pet ability casts, for the Pet tag. Kept on their own frame so they
+    -- never mix with your own casts.
+    if not self.petCastFrame then
+        self.petCastFrame = CreateFrame("Frame")
+        self.petCastFrame:SetScript("OnEvent", function(_, _, _, _, spellID)
+            RecordPetCast(spellID)
+        end)
+    end
+    self.petCastFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "pet")
 
     eventFrame:SetScript("OnEvent", function(_, event, ...)
         if event == "UNIT_COMBAT" then
@@ -3059,7 +4189,15 @@ function CombatTextPlus:OnInitialize()
                 RecordCast(spellID)
             end
         elseif event == "PLAYER_ENTER_COMBAT" then
+            autoMeleeOn = true
             MarkTargetEngaged()
+        elseif event == "PLAYER_LEAVE_COMBAT" then
+            autoMeleeOn = false
+        elseif event == "START_AUTOREPEAT_SPELL" then
+            autoRepeatOn = true
+            MarkTargetEngaged()
+        elseif event == "STOP_AUTOREPEAT_SPELL" then
+            autoRepeatOn = false
         elseif event == "PLAYER_TARGET_CHANGED" then
             targetEngagedAt = 0
             if IsAutoAttacking() then
@@ -3068,6 +4206,7 @@ function CombatTextPlus:OnInitialize()
         elseif event == "PLAYER_REGEN_ENABLED" then
             wipe(engagedPlates)
             targetEngagedAt = 0
+            lastHarmfulCastAt = 0
         elseif event == "PLAYER_ENTERING_WORLD" then
             RebuildPlates()
         end
